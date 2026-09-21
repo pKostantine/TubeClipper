@@ -26,6 +26,15 @@ if not exist ".venv-build\Scripts\python.exe" (
 )
 set "VPY=.venv-build\Scripts\python.exe"
 
+rem Some Windows Store/Python repair installs leave python.exe in C:\Python
+rem while the standard library remains under LocalAppData. Recover that
+rem split installation without changing the user's global environment.
+"%VPY%" -c "import encodings" >nul 2>&1
+if errorlevel 1 (
+    for /d %%D in ("%LOCALAPPDATA%\Programs\Python\Python3*") do if exist "%%~fD\Lib\encodings\__init__.py" set "PYTHONHOME=%%~fD"
+)
+"%VPY%" -c "import encodings" >nul 2>&1 || goto :fail
+
 echo  Installing dependencies...
 "%VPY%" -m pip install --upgrade pip --quiet || goto :fail
 "%VPY%" -m pip install -r requirements.txt --quiet || goto :fail

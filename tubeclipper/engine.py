@@ -404,6 +404,7 @@ def download_whole(url, video_id, height=None, on_progress=None,
     opts = {
         "quiet": True,
         "no_warnings": True,
+        "noprogress": True,
         "noplaylist": True,
         "outtmpl": template,
         "format": fmt,

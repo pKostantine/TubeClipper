@@ -14,9 +14,20 @@ if not defined PY (
     exit /b 1
 )
 
+set "FIRST_RUN="
 if not exist ".venv\Scripts\python.exe" (
     echo First run: creating TubeClipper's environment...
     %PY% -m venv .venv || (pause & exit /b 1)
+    set "FIRST_RUN=1"
+)
+
+.venv\Scripts\python.exe -c "import encodings" >nul 2>&1
+if errorlevel 1 (
+    for /d %%D in ("%LOCALAPPDATA%\Programs\Python\Python3*") do if exist "%%~fD\Lib\encodings\__init__.py" set "PYTHONHOME=%%~fD"
+)
+.venv\Scripts\python.exe -c "import encodings" >nul 2>&1 || (pause & exit /b 1)
+
+if defined FIRST_RUN (
     .venv\Scripts\python.exe -m pip install --upgrade pip --quiet
     .venv\Scripts\python.exe -m pip install -r requirements.txt || (pause & exit /b 1)
 )

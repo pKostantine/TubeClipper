@@ -47,6 +47,14 @@ a = Analysis(
     noarchive=False,
 )
 
+# Codex's document toolchain adds Poppler's bin directory to PATH. PyInstaller
+# follows DLLs it sees there and would otherwise copy Poppler's private ICU and
+# OpenSSL builds beside Qt, where Windows loads the incompatible copies first.
+# A normal user's shell does not have this path, but filtering it here keeps the
+# build reproducible in development workspaces that do.
+a.binaries = [entry for entry in a.binaries
+              if ".cache\\codex-runtimes" not in entry[1].lower()]
+
 pyz = PYZ(a.pure, a.zipped_data)
 
 exe = EXE(

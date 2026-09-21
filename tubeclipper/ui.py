@@ -331,6 +331,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._next_ident = 1
         self._thumb_task = None
         self._probe_task = None
+        self._poster_task = None
         self._ffmpeg_task = None
         self._preview_stream = None
         self._thumb_dir = ""
@@ -941,6 +942,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._warn("Could not read that link", message)
 
     def _load_poster(self, url):
+        if self._poster_task is not None:
+            self._poster_task.cancel()
         if not url:
             self.thumb.clear()
             return
@@ -951,10 +954,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 return response.read()
 
         task = jobs.Task(fetch)
-        task.signals.done.connect(self._poster_ready)
+        task.signals.done.connect(lambda data, wanted=url:
+                                  self._poster_ready(wanted, data))
+        self._poster_task = task
         self.pool.start(task)
 
-    def _poster_ready(self, data):
+    def _poster_ready(self, wanted, data):
+        if self.source is None or self.source.thumbnail != wanted:
+            return
         image = QtGui.QPixmap()
         if image.loadFromData(data):
             self.thumb.setPixmap(image.scaled(
@@ -1490,8 +1497,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._ffmpeg_task is not None:
             return
 
+        task = None
+
         def install(report):
-            return ffmpegtool.install_ffmpeg(on_progress=report)
+            return ffmpegtool.install_ffmpeg(
+                on_progress=report, cancel=lambda: task.cancelled())
 
         task = jobs.Task(install)
         task.signals.progress.connect(
@@ -1563,6 +1573,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self._probe_task.cancel()
         if self._thumb_task is not None:
             self._thumb_task.cancel()
+        if self._poster_task is not None:
+            self._poster_task.cancel()
+        if self._ffmpeg_task is not None:
+            self._ffmpeg_task.cancel()
         self.runner.stop()
         self.runner.wait(2500)
         if self._thumb_dir:

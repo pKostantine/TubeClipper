@@ -70,6 +70,8 @@ class Task(QtCore.QRunnable):
 
     @QtCore.Slot()
     def run(self):
+        if self._cancelled:
+            return
         try:
             if _takes_report(self._fn):
                 self._kwargs["report"] = \
