@@ -1,0 +1,276 @@
+"""
+player.py -- the preview pane and its transport.
+
+The player streams straight from YouTube's media URL rather than from a
+downloaded copy.  That is what makes finding the moment you want on a
+six-hour stream bearable: seeking is an HTTP range request, so jumping to
+04:12:30 costs about as much as jumping to 00:00:30, and nothing has to be
+fetched before the window becomes useful.
+
+The cost is that a media player cannot mux two remote streams, so preview
+uses a combined stream where one exists -- lower resolution than the export
+will be, which for choosing in and out points is the right trade.  When a
+video has no combined stream at all (livestreams, mostly) preview falls
+back to a video-only stream and the window says the preview is silent
+rather than leaving the user hunting for a volume problem that isn't one.
+"""
+
+from __future__ import annotations
+
+from PySide6 import QtCore, QtGui, QtWidgets
+
+try:
+    from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+    from PySide6.QtMultimediaWidgets import QVideoWidget
+    HAVE_MEDIA = True
+    MEDIA_ERROR = ""
+except Exception as exc:                            # pragma: no cover
+    HAVE_MEDIA = False
+    MEDIA_ERROR = str(exc)
+    QMediaPlayer = QAudioOutput = QVideoWidget = None
+
+RATES = (0.25, 0.5, 1.0, 1.5, 2.0, 4.0)
+
+
+class PlayerPane(QtWidgets.QWidget):
+    """Video surface plus transport, reporting position in seconds."""
+
+    positionChanged = QtCore.Signal(float)
+    durationChanged = QtCore.Signal(float)
+    playingChanged = QtCore.Signal(bool)
+    errored = QtCore.Signal(str)
+    markIn = QtCore.Signal(float)
+    markOut = QtCore.Signal(float)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._scale = 1.0
+        self._seeking = False
+        self._buttons = []
+
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(6)
+
+        self.surface = QtWidgets.QFrame()
+        self.surface.setStyleSheet("background:#000; border:1px solid #262b34;"
+                                   "border-radius:6px;")
+        self.surface.setMinimumHeight(180)
+        self.surface.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
+                                   QtWidgets.QSizePolicy.Expanding)
+        surface_layout = QtWidgets.QVBoxLayout(self.surface)
+        surface_layout.setContentsMargins(1, 1, 1, 1)
+
+        self.placeholder = QtWidgets.QLabel("Paste a YouTube link above")
+        self.placeholder.setAlignment(QtCore.Qt.AlignCenter)
+        self.placeholder.setStyleSheet("color:#5a626e; background:transparent;")
+
+        if HAVE_MEDIA:
+            self.video = QVideoWidget()
+            self.video.setStyleSheet("background:#000;")
+            self.video.setAspectRatioMode(QtCore.Qt.KeepAspectRatio)
+            surface_layout.addWidget(self.video)
+            self.video.hide()
+            surface_layout.addWidget(self.placeholder)
+
+            self.audio = QAudioOutput()
+            self.audio.setVolume(0.9)
+            self.player = QMediaPlayer()
+            self.player.setAudioOutput(self.audio)
+            self.player.setVideoOutput(self.video)
+            self.player.positionChanged.connect(self._on_position)
+            self.player.durationChanged.connect(self._on_duration)
+            self.player.playbackStateChanged.connect(self._on_state)
+            self.player.errorOccurred.connect(self._on_error)
+        else:                                        # pragma: no cover
+            self.video = None
+            self.player = None
+            self.audio = None
+            self.placeholder.setText("Qt Multimedia is unavailable:\n" + MEDIA_ERROR)
+            surface_layout.addWidget(self.placeholder)
+
+        outer.addWidget(self.surface, 1)
+        outer.addLayout(self._transport())
+        self.set_enabled(False)
+
+    # -- construction ----------------------------------------------------
+
+    def _button(self, text, tip, slot, width=34):
+        b = QtWidgets.QPushButton(text)
+        b.setToolTip(tip)
+        b.clicked.connect(slot)
+        b.setFixedWidth(width)
+        self._buttons.append((b, width))
+        return b
+
+    def _transport(self):
+        row = QtWidgets.QHBoxLayout()
+        row.setSpacing(6)
+
+        self.btn_back10 = self._button("−10s", "Back ten seconds",
+                                       lambda: self.nudge(-10))
+        self.btn_back1 = self._button("−1s", "Back one second",
+                                      lambda: self.nudge(-1))
+        self.btn_frame_back = self._button("◀|", "Back one frame (Left)",
+                                           lambda: self.nudge(-self._frame()))
+        self.btn_play = self._button("▶", "Play / pause (Space)", self.toggle, 42)
+        self.btn_frame_fwd = self._button("|▶", "Forward one frame (Right)",
+                                          lambda: self.nudge(self._frame()))
+        self.btn_fwd1 = self._button("+1s", "Forward one second",
+                                     lambda: self.nudge(1))
+        self.btn_fwd10 = self._button("+10s", "Forward ten seconds",
+                                      lambda: self.nudge(10))
+        for b in (self.btn_back10, self.btn_back1, self.btn_frame_back,
+                  self.btn_play, self.btn_frame_fwd, self.btn_fwd1,
+                  self.btn_fwd10):
+            row.addWidget(b)
+
+        row.addSpacing(8)
+        self.readout = QtWidgets.QLabel("0:00.000")
+        self.readout.setObjectName("value")
+        self.readout.setMinimumWidth(96)
+        font = QtGui.QFont("Consolas" if QtGui.QFontDatabase.families().count("Consolas")
+                           else "Monospace")
+        font.setStyleHint(QtGui.QFont.Monospace)
+        self.readout.setFont(font)
+        row.addWidget(self.readout)
+
+        row.addStretch(1)
+
+        self.btn_in = QtWidgets.QPushButton("Set In  (I)")
+        self.btn_in.setToolTip("Put the in point at the playhead")
+        self.btn_in.clicked.connect(lambda: self.markIn.emit(self.position()))
+        self.btn_out = QtWidgets.QPushButton("Set Out  (O)")
+        self.btn_out.setToolTip("Put the out point at the playhead")
+        self.btn_out.clicked.connect(lambda: self.markOut.emit(self.position()))
+        row.addWidget(self.btn_in)
+        row.addWidget(self.btn_out)
+
+        row.addSpacing(8)
+        self.rate = QtWidgets.QComboBox()
+        for r in RATES:
+            self.rate.addItem(f"{r:g}×", r)
+        self.rate.setCurrentIndex(RATES.index(1.0))
+        self.rate.setToolTip("Playback speed")
+        self.rate.currentIndexChanged.connect(self._on_rate)
+        self.rate.setFixedWidth(66)
+        row.addWidget(self.rate)
+
+        self.volume = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.volume.setRange(0, 100)
+        self.volume.setValue(90)
+        self.volume.setFixedWidth(90)
+        self.volume.setToolTip("Volume")
+        self.volume.valueChanged.connect(self._on_volume)
+        row.addWidget(self.volume)
+        return row
+
+    # -- scaling ---------------------------------------------------------
+
+    def set_scale(self, k):
+        self._scale = k
+        r = lambda v: int(round(v * k))
+        for b, base in self._buttons:
+            b.setFixedWidth(r(base))
+        self.readout.setMinimumWidth(r(96))
+        self.rate.setFixedWidth(r(66))
+        self.volume.setFixedWidth(r(90))
+        self.surface.setMinimumHeight(r(180))
+
+    # -- loading ---------------------------------------------------------
+
+    def set_enabled(self, on):
+        for widget in (self.btn_back10, self.btn_back1, self.btn_frame_back,
+                       self.btn_play, self.btn_frame_fwd, self.btn_fwd1,
+                       self.btn_fwd10, self.btn_in, self.btn_out, self.rate):
+            widget.setEnabled(bool(on) and HAVE_MEDIA)
+
+    def load(self, url, fps=0.0):
+        """Point the player at a URL.  Does not start playing."""
+        if not HAVE_MEDIA:
+            return
+        self._fps = fps or 25.0
+        self.placeholder.hide()
+        self.video.show()
+        self.player.setSource(QtCore.QUrl(url))
+        self.set_enabled(True)
+
+    def clear(self):
+        if not HAVE_MEDIA:
+            return
+        self.player.stop()
+        self.player.setSource(QtCore.QUrl())
+        self.video.hide()
+        self.placeholder.show()
+        self.set_enabled(False)
+
+    # -- transport -------------------------------------------------------
+
+    def _frame(self):
+        return 1.0 / max(1.0, getattr(self, "_fps", 25.0))
+
+    def position(self):
+        if not HAVE_MEDIA or self.player is None:
+            return 0.0
+        return self.player.position() / 1000.0
+
+    def playing(self):
+        return (HAVE_MEDIA and self.player is not None
+                and self.player.playbackState() == QMediaPlayer.PlayingState)
+
+    def play(self):
+        if HAVE_MEDIA and self.player is not None:
+            self.player.play()
+
+    def pause(self):
+        if HAVE_MEDIA and self.player is not None:
+            self.player.pause()
+
+    def toggle(self):
+        self.pause() if self.playing() else self.play()
+
+    def nudge(self, seconds):
+        # Stepping a frame while playing fights the playback clock, so
+        # any manual step pauses first -- which is also what a person
+        # expects from a frame-step button.
+        if self.playing():
+            self.pause()
+        self.seek(self.position() + seconds)
+
+    def seek(self, seconds):
+        if not HAVE_MEDIA or self.player is None:
+            return
+        self._seeking = True
+        self.player.setPosition(int(max(0.0, seconds) * 1000))
+        self._seeking = False
+
+    def set_volume(self, percent):
+        self.volume.setValue(int(percent))
+
+    # -- signals ---------------------------------------------------------
+
+    def _on_position(self, ms):
+        seconds = ms / 1000.0
+        from .source import format_timecode
+        self.readout.setText(format_timecode(seconds))
+        self.positionChanged.emit(seconds)
+
+    def _on_duration(self, ms):
+        self.durationChanged.emit(ms / 1000.0)
+
+    def _on_state(self, state):
+        playing = state == QMediaPlayer.PlayingState
+        self.btn_play.setText("❚❚" if playing else "▶")
+        self.playingChanged.emit(playing)
+
+    def _on_rate(self, _index):
+        if HAVE_MEDIA and self.player is not None:
+            self.player.setPlaybackRate(float(self.rate.currentData()))
+
+    def _on_volume(self, value):
+        if HAVE_MEDIA and self.audio is not None:
+            self.audio.setVolume(value / 100.0)
+
+    def _on_error(self, _error, text=""):
+        if text:
+            self.errored.emit(text)
