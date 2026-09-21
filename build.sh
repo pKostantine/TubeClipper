@@ -12,6 +12,8 @@ for candidate in python3.13 python3.12 python3.11 python3.10 python3; do
     command -v "$candidate" >/dev/null 2>&1 && { PY="$candidate"; break; }
 done
 [ -n "$PY" ] || fail "Python 3.10 or newer is required."
+command -v ffmpeg >/dev/null 2>&1 || fail "ffmpeg is required. Install it with: brew install ffmpeg"
+command -v ffprobe >/dev/null 2>&1 || fail "ffprobe is required. Install it with: brew install ffmpeg"
 
 [ -x .venv-build/bin/python ] || "$PY" -m venv .venv-build || fail "Could not create the build environment."
 VPY=.venv-build/bin/python
@@ -27,7 +29,10 @@ TUBECLIPPER_VERSION="$VERSION" "$VPY" -m PyInstaller --clean --noconfirm \
     TubeClipper-mac.spec || fail "PyInstaller failed."
 [ -d dist/TubeClipper.app ] || fail "The app bundle is missing."
 printf '%s' "$VERSION" > dist/TubeClipper.app/Contents/MacOS/VERSION.txt
-codesign --force --deep --sign - dist/TubeClipper.app 2>/dev/null || true
+codesign --force --deep --sign - dist/TubeClipper.app || fail "Ad-hoc code signing failed."
+codesign --verify --deep --strict dist/TubeClipper.app || fail "Code-signature verification failed."
+QT_QPA_PLATFORM=offscreen dist/TubeClipper.app/Contents/MacOS/TubeClipper --selftest \
+    || fail "The frozen app self-test failed."
 
 printf '\nDone: dist/TubeClipper.app\n'
-printf 'Install ffmpeg with Homebrew before first use: brew install ffmpeg\n'
+printf 'ffmpeg and ffprobe are bundled inside the app.\n'

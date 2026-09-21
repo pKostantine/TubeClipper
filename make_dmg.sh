@@ -10,9 +10,10 @@ fail() { printf '\n [X] %s\n' "$*"; exit 1; }
 
 VPY=.venv-build/bin/python
 VERSION="$("$VPY" tools/version.py)"
+ARCH="$(uname -m)"
 APP=dist/TubeClipper.app
 STAGE=build/dmg
-DMG="dist/TubeClipper-$VERSION.dmg"
+DMG="dist/TubeClipper-$VERSION-macOS-$ARCH.dmg"
 [ -d "$APP" ] || fail "$APP is missing."
 
 rm -rf "$STAGE" "$DMG"
@@ -25,10 +26,7 @@ TubeClipper
 
 Drag TubeClipper into Applications.
 
-TubeClipper also needs ffmpeg. If it is not already installed, open Terminal
-and run:
-
-    brew install ffmpeg
+ffmpeg and ffprobe are included. No Homebrew installation is needed.
 
 If macOS blocks the app because it is not notarized, Control-click the app,
 choose Open, then choose Open once more. This is only needed on first launch.

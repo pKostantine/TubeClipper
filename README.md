@@ -133,14 +133,29 @@ PySide6, yt-dlp, ffmpeg, and ffprobe and does not require administrator access.
 
 ## Build macOS
 
-On a Mac with Python 3.10+ and ffmpeg installed through Homebrew:
+On a Mac with Python 3.10+ and ffmpeg installed through Homebrew on the build
+machine:
 
 ```sh
 ./build.sh
 ./make_dmg.sh
 ```
 
-This creates `dist/TubeClipper.app` and `dist/TubeClipper-<version>.dmg`.
+This creates `dist/TubeClipper.app` and
+`dist/TubeClipper-<version>-macOS-<architecture>.dmg`. ffmpeg and ffprobe are
+bundled inside the app, so the destination Mac does not need Homebrew.
+
+The GitHub Actions workflow in `.github/workflows/macos-release.yml` builds
+native Apple Silicon (`arm64`) and Intel (`x86_64`) DMGs. It can be run
+manually from the Actions page to download workflow artifacts. Pushing a
+version tag builds both installers, creates the matching GitHub Release if
+needed, and attaches both DMGs:
+
+```sh
+git tag v1.0.0
+git push origin v1.0.0
+```
+
 The included build is ad-hoc signed, not Apple-notarized, so another Mac may
 need the Control-click → Open flow on first launch.
 

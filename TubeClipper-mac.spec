@@ -2,13 +2,26 @@
 """PyInstaller macOS app bundle for TubeClipper."""
 
 import os
+import shutil
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+
+
+ffmpeg = shutil.which("ffmpeg")
+ffprobe = shutil.which("ffprobe")
+if not ffmpeg or not ffprobe:
+    raise SystemExit(
+        "ffmpeg and ffprobe are required to build TubeClipper for macOS. "
+        "Install them with: brew install ffmpeg"
+    )
 
 a = Analysis(
     ["TubeClipper.py"],
     pathex=[os.path.abspath(".")],
-    binaries=[],
+    binaries=[
+        (ffmpeg, "ffmpeg"),
+        (ffprobe, "ffmpeg"),
+    ],
     datas=[
         ("assets/TubeClipper.icns", "assets"),
         ("assets/logo.png", "assets"),

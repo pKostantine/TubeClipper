@@ -1,0 +1,77 @@
+name: Build macOS installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build macOS (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install ffmpeg
+        run: brew install ffmpeg
+
+      - name: Build and verify DMG
+        shell: bash
+        run: |
+          chmod +x build.sh make_dmg.sh
+          ./make_dmg.sh
+          test -f "dist/TubeClipper-$(python tools/version.py)-macOS-${{ matrix.arch }}.dmg"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: TubeClipper-macOS-${{ matrix.arch }}
+          path: dist/TubeClipper-*-macOS-${{ matrix.arch }}.dmg
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download both macOS artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: TubeClipper-macOS-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create release and attach DMGs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes \
+              --title "TubeClipper $GITHUB_REF_NAME"
+          gh release upload "$GITHUB_REF_NAME" release-assets/*.dmg --clobber
