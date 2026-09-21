@@ -10,3 +10,4 @@ assets/icon.icns
 assets/logo_*.png
 assets/check.png
 .cache/
+RELEASE_NOTES_*.md

@@ -6,6 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6 import QtCore, QtWidgets
 
 from tubeclipper import engine, source
+from tubeclipper.player import PlayerPane
 from tubeclipper.ui import MainWindow, TimecodeEdit, style_sheet
 
 
@@ -29,6 +30,22 @@ class WidgetTests(unittest.TestCase):
         large = style_sheet(2.0)
         self.assertIn("border-radius: 6px", small)
         self.assertIn("border-radius: 12px", large)
+
+    def test_transport_uses_media_icons(self):
+        player = PlayerPane()
+        try:
+            buttons = (
+                player.btn_back10, player.btn_back1, player.btn_frame_back,
+                player.btn_play, player.btn_frame_fwd, player.btn_fwd1,
+                player.btn_fwd10,
+            )
+            self.assertTrue(all(not button.icon().isNull()
+                                for button in buttons))
+            self.assertEqual(player.btn_play.text(), "")
+            self.assertEqual(player.btn_back10.text(), "10s")
+            self.assertEqual(player.btn_fwd10.text(), "10s")
+        finally:
+            player.close()
 
     def test_main_window_clip_flow(self):
         window = MainWindow()

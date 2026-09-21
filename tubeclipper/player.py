@@ -32,6 +32,48 @@ except Exception as exc:                            # pragma: no cover
 RATES = (0.25, 0.5, 1.0, 1.5, 2.0, 4.0)
 
 
+def _transport_icon(name):
+    """Return a crisp, theme-matched media icon without font glyphs."""
+    size = 64
+    canvas = QtGui.QPixmap(size, size)
+    canvas.fill(QtCore.Qt.transparent)
+
+    painter = QtGui.QPainter(canvas)
+    painter.setRenderHint(QtGui.QPainter.Antialiasing)
+    color = QtGui.QColor("#e3e8f0")
+    pen = QtGui.QPen(color, 5, QtCore.Qt.SolidLine,
+                     QtCore.Qt.RoundCap, QtCore.Qt.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(color)
+
+    def polygon(points):
+        painter.drawPolygon(QtGui.QPolygonF(
+            [QtCore.QPointF(x, y) for x, y in points]))
+
+    if name == "back":
+        polygon(((29, 14), (29, 50), (8, 32)))
+        polygon(((53, 14), (53, 50), (32, 32)))
+    elif name == "previous":
+        painter.drawLine(QtCore.QPointF(12, 13), QtCore.QPointF(12, 51))
+        polygon(((51, 14), (51, 50), (20, 32)))
+    elif name == "play":
+        polygon(((18, 12), (18, 52), (52, 32)))
+    elif name == "pause":
+        painter.drawRoundedRect(QtCore.QRectF(16, 12, 11, 40), 2, 2)
+        painter.drawRoundedRect(QtCore.QRectF(37, 12, 11, 40), 2, 2)
+    elif name == "next":
+        polygon(((13, 14), (13, 50), (44, 32)))
+        painter.drawLine(QtCore.QPointF(52, 13), QtCore.QPointF(52, 51))
+    elif name == "forward":
+        polygon(((11, 14), (11, 50), (32, 32)))
+        polygon(((35, 14), (35, 50), (56, 32)))
+    else:                                           # pragma: no cover
+        raise ValueError(f"Unknown transport icon: {name}")
+
+    painter.end()
+    return QtGui.QIcon(canvas)
+
+
 class PlayerPane(QtWidgets.QWidget):
     """Video surface plus transport, reporting position in seconds."""
 
@@ -47,6 +89,10 @@ class PlayerPane(QtWidgets.QWidget):
         self._scale = 1.0
         self._seeking = False
         self._buttons = []
+        self._transport_icons = {
+            name: _transport_icon(name)
+            for name in ("back", "previous", "play", "pause", "next", "forward")
+        }
 
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -95,9 +141,14 @@ class PlayerPane(QtWidgets.QWidget):
 
     # -- construction ----------------------------------------------------
 
-    def _button(self, text, tip, slot, width=34):
+    def _button(self, icon, tip, slot, width=38, text="", icon_after=False):
         b = QtWidgets.QPushButton(text)
+        b.setIcon(icon)
+        b.setIconSize(QtCore.QSize(18, 18))
+        if icon_after:
+            b.setLayoutDirection(QtCore.Qt.RightToLeft)
         b.setToolTip(tip)
+        b.setAccessibleName(tip.partition(" (")[0])
         b.clicked.connect(slot)
         b.setFixedWidth(width)
         self._buttons.append((b, width))
@@ -107,19 +158,27 @@ class PlayerPane(QtWidgets.QWidget):
         row = QtWidgets.QHBoxLayout()
         row.setSpacing(6)
 
-        self.btn_back10 = self._button("−10s", "Back ten seconds",
-                                       lambda: self.nudge(-10))
-        self.btn_back1 = self._button("−1s", "Back one second",
-                                      lambda: self.nudge(-1))
-        self.btn_frame_back = self._button("◀|", "Back one frame (Left)",
-                                           lambda: self.nudge(-self._frame()))
-        self.btn_play = self._button("▶", "Play / pause (Space)", self.toggle, 42)
-        self.btn_frame_fwd = self._button("|▶", "Forward one frame (Right)",
-                                          lambda: self.nudge(self._frame()))
-        self.btn_fwd1 = self._button("+1s", "Forward one second",
-                                     lambda: self.nudge(1))
-        self.btn_fwd10 = self._button("+10s", "Forward ten seconds",
-                                      lambda: self.nudge(10))
+        icons = self._transport_icons
+        self.btn_back10 = self._button(
+            icons["back"], "Back ten seconds", lambda: self.nudge(-10),
+            width=60, text="10s")
+        self.btn_back1 = self._button(
+            icons["back"], "Back one second", lambda: self.nudge(-1),
+            width=52, text="1s")
+        self.btn_frame_back = self._button(
+            icons["previous"], "Back one frame (Left)",
+            lambda: self.nudge(-self._frame()))
+        self.btn_play = self._button(
+            icons["play"], "Play / pause (Space)", self.toggle, 44)
+        self.btn_frame_fwd = self._button(
+            icons["next"], "Forward one frame (Right)",
+            lambda: self.nudge(self._frame()))
+        self.btn_fwd1 = self._button(
+            icons["forward"], "Forward one second", lambda: self.nudge(1),
+            width=52, text="1s", icon_after=True)
+        self.btn_fwd10 = self._button(
+            icons["forward"], "Forward ten seconds", lambda: self.nudge(10),
+            width=60, text="10s", icon_after=True)
         for b in (self.btn_back10, self.btn_back1, self.btn_frame_back,
                   self.btn_play, self.btn_frame_fwd, self.btn_fwd1,
                   self.btn_fwd10):
@@ -172,6 +231,7 @@ class PlayerPane(QtWidgets.QWidget):
         r = lambda v: int(round(v * k))
         for b, base in self._buttons:
             b.setFixedWidth(r(base))
+            b.setIconSize(QtCore.QSize(r(18), r(18)))
         self.readout.setMinimumWidth(r(96))
         self.rate.setFixedWidth(r(66))
         self.volume.setFixedWidth(r(90))
@@ -260,7 +320,8 @@ class PlayerPane(QtWidgets.QWidget):
 
     def _on_state(self, state):
         playing = state == QMediaPlayer.PlayingState
-        self.btn_play.setText("❚❚" if playing else "▶")
+        self.btn_play.setIcon(
+            self._transport_icons["pause" if playing else "play"])
         self.playingChanged.emit(playing)
 
     def _on_rate(self, _index):
