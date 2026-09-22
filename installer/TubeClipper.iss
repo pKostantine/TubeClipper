@@ -7,6 +7,7 @@
 #define AppExe "TubeClipper.exe"
 
 [Setup]
+; Keep this ID unchanged so every release upgrades the existing installation.
 AppId={{DB70623F-AD7E-49D1-83F3-08A44D109A64}
 AppName={#AppName}
 AppVersion={#AppVersion}
@@ -17,6 +18,13 @@ VersionInfoProductName={#AppName}
 PrivilegesRequired=lowest
 DefaultDirName={localappdata}\Programs\{#AppName}
 DefaultGroupName={#AppName}
+UsePreviousAppDir=yes
+UsePreviousGroup=yes
+UsePreviousTasks=yes
+CloseApplications=yes
+RestartApplications=no
+Uninstallable=yes
+CreateUninstallRegKey=yes
 DisableProgramGroupPage=yes
 UninstallDisplayName={#AppName}
 UninstallDisplayIcon={app}\{#AppExe}
