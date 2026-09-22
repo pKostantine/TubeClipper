@@ -9,8 +9,8 @@ included and must be built on a Mac.
 
 ## Features
 
-- Embedded video preview with play/pause, variable speed, frame stepping,
-  ten-second jumps, volume, and keyboard transport controls.
+- Embedded video preview with synchronized audio, play/pause, variable speed,
+  frame stepping, timed jumps, volume, and keyboard transport controls.
 - Zoomable filmstrip timeline with draggable in/out handles and timecode entry.
 - Multiple named clips from one source and a serial batch-export queue.
 - Exact cuts that re-encode from the requested frame, or fast lossless cuts
@@ -75,6 +75,19 @@ ffmpeg and ffprobe and does not need that download.
 Fast mode is only a true stream copy when the selected source codec fits the
 chosen container. If one stream must be encoded for compatibility, the queue
 records that fact instead of silently pretending the job was lossless.
+
+## Preview audio
+
+TubeClipper plays combined YouTube streams directly. When YouTube provides
+video and audio as separate adaptive streams, TubeClipper loads both and keeps
+the audio synchronized while playing, seeking, stepping, or changing speed.
+The volume slider controls either playback mode.
+
+If a preview is silent, confirm that Windows or macOS is using the intended
+audio output device and that TubeClipper is not muted in the system volume
+mixer. Signed-in or restricted videos may also require browser cookies in
+TubeClipper's preferences. See [Preview audio troubleshooting](docs/PREVIEW_AUDIO.md)
+for more detail.
 
 ## Keyboard shortcuts
 
@@ -152,8 +165,8 @@ version tag builds both installers, creates the matching GitHub Release if
 needed, and attaches both DMGs:
 
 ```sh
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.2.0
+git push origin v1.2.0
 ```
 
 The included build is ad-hoc signed, not Apple-notarized, so another Mac may

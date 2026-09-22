@@ -64,9 +64,16 @@ class SelectionTests(unittest.TestCase):
             "vcodec": "avc1", "acodec": "aac", "height": 720,
             "tbr": 2000,
         }]
-        selected, note = source.preview_stream({"formats": more})
-        self.assertEqual(selected.height, 720)
-        self.assertEqual(note, "")
+        selected = source.preview_stream({"formats": more})
+        self.assertEqual(selected.video.height, 720)
+        self.assertTrue(selected.progressive)
+        self.assertEqual(selected.note, "")
+
+    def test_preview_pairs_adaptive_video_and_audio(self):
+        selected = source.preview_stream({"formats": FORMATS[:-1]})
+        self.assertEqual(selected.video.format_id, "137")
+        self.assertEqual(selected.audio.format_id, "140")
+        self.assertFalse(selected.progressive)
 
 
 class CommandTests(unittest.TestCase):

@@ -7,12 +7,9 @@ six-hour stream bearable: seeking is an HTTP range request, so jumping to
 04:12:30 costs about as much as jumping to 00:00:30, and nothing has to be
 fetched before the window becomes useful.
 
-The cost is that a media player cannot mux two remote streams, so preview
-uses a combined stream where one exists -- lower resolution than the export
-will be, which for choosing in and out points is the right trade.  When a
-video has no combined stream at all (livestreams, mostly) preview falls
-back to a video-only stream and the window says the preview is silent
-rather than leaving the user hunting for a volume problem that isn't one.
+Preview prefers a combined video/audio stream.  When YouTube exposes separate
+adaptive tracks instead, a second QMediaPlayer handles the audio and follows
+the video player's play, pause, seek, speed, and position changes.
 """
 
 from __future__ import annotations
@@ -88,6 +85,7 @@ class PlayerPane(QtWidgets.QWidget):
         super().__init__(parent)
         self._scale = 1.0
         self._seeking = False
+        self._split_audio = False
         self._buttons = []
         self._transport_icons = {
             name: _transport_icon(name)
@@ -119,19 +117,26 @@ class PlayerPane(QtWidgets.QWidget):
             self.video.hide()
             surface_layout.addWidget(self.placeholder)
 
-            self.audio = QAudioOutput()
+            self.audio = QAudioOutput(self)
             self.audio.setVolume(0.9)
-            self.player = QMediaPlayer()
+            self.split_audio = QAudioOutput(self)
+            self.split_audio.setVolume(0.9)
+            self.player = QMediaPlayer(self)
             self.player.setAudioOutput(self.audio)
             self.player.setVideoOutput(self.video)
+            self.audio_player = QMediaPlayer(self)
+            self.audio_player.setAudioOutput(self.split_audio)
             self.player.positionChanged.connect(self._on_position)
             self.player.durationChanged.connect(self._on_duration)
             self.player.playbackStateChanged.connect(self._on_state)
             self.player.errorOccurred.connect(self._on_error)
+            self.audio_player.errorOccurred.connect(self._on_audio_error)
         else:                                        # pragma: no cover
             self.video = None
             self.player = None
             self.audio = None
+            self.audio_player = None
+            self.split_audio = None
             self.placeholder.setText("Qt Multimedia is unavailable:\n" + MEDIA_ERROR)
             surface_layout.addWidget(self.placeholder)
 
@@ -245,21 +250,29 @@ class PlayerPane(QtWidgets.QWidget):
                        self.btn_fwd10, self.btn_in, self.btn_out, self.rate):
             widget.setEnabled(bool(on) and HAVE_MEDIA)
 
-    def load(self, url, fps=0.0):
-        """Point the player at a URL.  Does not start playing."""
+    def load(self, url, fps=0.0, audio_url=""):
+        """Load preview video and an optional separate audio stream."""
         if not HAVE_MEDIA:
             return
         self._fps = fps or 25.0
+        self.player.stop()
+        self.audio_player.stop()
+        self._split_audio = bool(audio_url)
         self.placeholder.hide()
         self.video.show()
         self.player.setSource(QtCore.QUrl(url))
+        self.audio_player.setSource(
+            QtCore.QUrl(audio_url) if audio_url else QtCore.QUrl())
         self.set_enabled(True)
 
     def clear(self):
         if not HAVE_MEDIA:
             return
         self.player.stop()
+        self.audio_player.stop()
         self.player.setSource(QtCore.QUrl())
+        self.audio_player.setSource(QtCore.QUrl())
+        self._split_audio = False
         self.video.hide()
         self.placeholder.show()
         self.set_enabled(False)
@@ -281,10 +294,15 @@ class PlayerPane(QtWidgets.QWidget):
     def play(self):
         if HAVE_MEDIA and self.player is not None:
             self.player.play()
+            if self._split_audio:
+                self._sync_audio(force=True)
+                self.audio_player.play()
 
     def pause(self):
         if HAVE_MEDIA and self.player is not None:
             self.player.pause()
+            if self._split_audio:
+                self.audio_player.pause()
 
     def toggle(self):
         self.pause() if self.playing() else self.play()
@@ -301,7 +319,10 @@ class PlayerPane(QtWidgets.QWidget):
         if not HAVE_MEDIA or self.player is None:
             return
         self._seeking = True
-        self.player.setPosition(int(max(0.0, seconds) * 1000))
+        position = int(max(0.0, seconds) * 1000)
+        self.player.setPosition(position)
+        if self._split_audio:
+            self.audio_player.setPosition(position)
         self._seeking = False
 
     def set_volume(self, percent):
@@ -310,6 +331,8 @@ class PlayerPane(QtWidgets.QWidget):
     # -- signals ---------------------------------------------------------
 
     def _on_position(self, ms):
+        if self._split_audio and self.playing():
+            self._sync_audio(ms)
         seconds = ms / 1000.0
         from .source import format_timecode
         self.readout.setText(format_timecode(seconds))
@@ -320,18 +343,43 @@ class PlayerPane(QtWidgets.QWidget):
 
     def _on_state(self, state):
         playing = state == QMediaPlayer.PlayingState
+        if self._split_audio:
+            if playing:
+                self._sync_audio(force=True)
+                self.audio_player.play()
+            elif state == QMediaPlayer.PausedState:
+                self.audio_player.pause()
+            else:
+                self.audio_player.stop()
         self.btn_play.setIcon(
             self._transport_icons["pause" if playing else "play"])
         self.playingChanged.emit(playing)
 
     def _on_rate(self, _index):
         if HAVE_MEDIA and self.player is not None:
-            self.player.setPlaybackRate(float(self.rate.currentData()))
+            rate = float(self.rate.currentData())
+            self.player.setPlaybackRate(rate)
+            self.audio_player.setPlaybackRate(rate)
 
     def _on_volume(self, value):
         if HAVE_MEDIA and self.audio is not None:
-            self.audio.setVolume(value / 100.0)
+            volume = value / 100.0
+            self.audio.setVolume(volume)
+            self.split_audio.setVolume(volume)
+
+    def _sync_audio(self, video_position=None, force=False):
+        """Keep an adaptive audio stream close to the video clock."""
+        if not self._split_audio or self.audio_player is None:
+            return
+        position = (self.player.position() if video_position is None
+                    else int(video_position))
+        if force or abs(self.audio_player.position() - position) > 500:
+            self.audio_player.setPosition(max(0, position))
 
     def _on_error(self, _error, text=""):
         if text:
             self.errored.emit(text)
+
+    def _on_audio_error(self, _error, text=""):
+        if self._split_audio and text:
+            self.errored.emit(f"Preview audio could not play: {text}")

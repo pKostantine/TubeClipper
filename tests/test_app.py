@@ -47,6 +47,21 @@ class WidgetTests(unittest.TestCase):
         finally:
             player.close()
 
+    def test_separate_preview_audio_is_loaded_and_volume_is_shared(self):
+        player = PlayerPane()
+        try:
+            player.load("file:///tubeclipper-test-video.mp4", 30,
+                        audio_url="file:///tubeclipper-test-audio.m4a")
+            self.assertTrue(player._split_audio)
+            self.assertEqual(player.audio_player.source().toString(),
+                             "file:///tubeclipper-test-audio.m4a")
+            player.set_volume(37)
+            self.assertAlmostEqual(player.audio.volume(), 0.37, places=2)
+            self.assertAlmostEqual(player.split_audio.volume(), 0.37, places=2)
+        finally:
+            player.clear()
+            player.close()
+
     def test_main_window_clip_flow(self):
         window = MainWindow()
         try:

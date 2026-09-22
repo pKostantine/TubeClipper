@@ -311,33 +311,52 @@ def select(info, max_height=None, audio_only=False, prefer_compatible=False):
 
 
 def preview_stream(info, max_height=720):
-    """A single URL a media player can open on its own.
+    """Pick preview media, pairing adaptive video and audio when needed.
 
-    A player cannot mux two remote streams, so preview wants a
-    progressive format even though it is lower quality than the export
-    will be.  Falling back to a video-only stream keeps scrubbing working
-    on livestreams, which usually have no progressive format at all; the
-    window says so rather than leaving the user wondering where the sound
-    went.
+    A combined stream remains the simplest and most reliable preview.  Modern
+    YouTube uploads often expose only separate adaptive streams, though, so in
+    that case return both tracks for the UI to play in sync.  H.264 and AAC are
+    preferred because Qt Multimedia supports them consistently on Windows and
+    macOS.
     """
     formats = _usable(info.get("formats"))
     muxed = [f for f in formats
              if (f.get("vcodec") or "none") != "none"
-             and (f.get("acodec") or "none") != "none"
-             and (f.get("height") or 0) <= max_height]
+             and (f.get("acodec") or "none") != "none"]
     if muxed:
-        best = max(muxed, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0))
-        return _stream(best), ""
+        capped = [f for f in muxed if (f.get("height") or 0) <= max_height]
+        if capped:
+            pool = capped
+        else:
+            smallest = min(f.get("height") or 0 for f in muxed)
+            pool = [f for f in muxed if (f.get("height") or 0) == smallest]
+
+        def muxed_score(f):
+            video_codec = (f.get("vcodec") or "").lower()
+            audio_codec = (f.get("acodec") or "").lower()
+            compatible = (int(video_codec.startswith(H264))
+                          + int(audio_codec.startswith(AAC)))
+            return (compatible, f.get("height") or 0, f.get("tbr") or 0)
+
+        best = max(pool, key=muxed_score)
+        return Selection(video=_stream(best))
 
     video_only = [f for f in formats
                   if (f.get("vcodec") or "none") != "none"
                   and (f.get("acodec") or "none") == "none"]
+    audio_only = [f for f in formats
+                  if (f.get("acodec") or "none") != "none"
+                  and (f.get("vcodec") or "none") == "none"]
     if video_only:
         capped = [f for f in video_only if (f.get("height") or 0) <= max_height]
         pool = capped or video_only
-        best = max(pool, key=lambda f: (f.get("height") or 0,
-                                        f.get("tbr") or 0))
-        return _stream(best), "Preview is silent: this video has no combined stream."
+        video = max(pool, key=lambda f: _score_video(f, True))
+        if audio_only:
+            audio = max(audio_only, key=lambda f: _score_audio(f, True))
+            return Selection(video=_stream(video), audio=_stream(audio))
+        return Selection(
+            video=_stream(video),
+            note="Preview is silent because this source has no audio stream.")
 
     raise SourceError("Nothing playable to preview.")
 

@@ -919,15 +919,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self._load_poster(src.thumbnail)
 
         try:
-            stream, note = source.preview_stream(src.info)
+            preview = source.preview_stream(src.info)
         except Exception as exc:
             self.player.clear()
             self.status.showMessage(f"No preview available: {exc}", 8000)
         else:
+            stream = preview.video
+            audio = preview.audio
             self._preview_stream = stream
-            self.player.load(stream.url, src.fps or stream.fps)
-            if note:
-                self.status.showMessage(note, 8000)
+            self.player.load(
+                stream.url, src.fps or stream.fps,
+                audio_url=audio.url if audio is not None else "")
+            if preview.note:
+                self.status.showMessage(preview.note, 8000)
             else:
                 self.status.showMessage(
                     f"Loaded. {src.display_duration} — mark a clip and export.",

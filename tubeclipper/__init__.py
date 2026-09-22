@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import sys
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 __all__ = ["ffmpegtool", "source", "formats", "engine", "jobs",
            "timeline", "player", "ui"]
 
