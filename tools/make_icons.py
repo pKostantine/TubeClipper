@@ -41,16 +41,20 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS = os.path.join(ROOT, "assets")
 
-#: Apple's icon grid, measured on macOS 26.
+#: Apple's icon grid.  Two independent measurements agree on it: tracing the
+#: .icns of a system app gives 814/1024 = 0.795, and comparing rendered Dock
+#: pixels against System Settings gives 94/114.3 = 0.822.  The second is the
+#: one that matters, since the goal is matching what the Dock draws.
 CANVAS = 1024
-ART_FRACTION = 814 / 1024
+ART_FRACTION = 0.822
 CORNER_RADIUS = 215 / 814  # of the artwork's side
 CORNER_N = 2.5             # 2 would be a plain circular arc
 
-#: The baked shadow, matched to the falloff on the system icons.
+#: The baked shadow, expressed against the artwork rather than the canvas so
+#: it stays in proportion if the fraction above is ever retuned.
 SHADOW_ALPHA = 80
-SHADOW_BLUR = 0.018        # of the canvas
-SHADOW_DROP = 0.005        # of the canvas, downwards
+SHADOW_BLUR = 0.0226       # of the artwork's side
+SHADOW_DROP = 0.0063       # of the artwork's side, downwards
 
 ICNS_SIZES = (16, 32, 64, 128, 256, 512, 1024)
 ICO_SIZES = (256, 128, 64, 48, 32, 24, 16)
@@ -97,8 +101,8 @@ def macos_icon(square, canvas=CANVAS):
 
     shadow = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
     shadow.paste((0, 0, 0, SHADOW_ALPHA),
-                 (offset, offset + int(round(canvas * SHADOW_DROP))), mask)
-    shadow = shadow.filter(ImageFilter.GaussianBlur(canvas * SHADOW_BLUR))
+                 (offset, offset + int(round(art * SHADOW_DROP))), mask)
+    shadow = shadow.filter(ImageFilter.GaussianBlur(art * SHADOW_BLUR))
 
     out = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
     out.alpha_composite(shadow)

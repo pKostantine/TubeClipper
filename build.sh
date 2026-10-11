@@ -29,6 +29,10 @@ TUBECLIPPER_VERSION="$VERSION" "$VPY" -m PyInstaller --clean --noconfirm \
     TubeClipper-mac.spec || fail "PyInstaller failed."
 [ -d dist/TubeClipper.app ] || fail "The app bundle is missing."
 printf '%s' "$VERSION" > dist/TubeClipper.app/Contents/MacOS/VERSION.txt
+# Name the icon after its own contents. macOS keys its icon cache on the
+# filename, not the bytes, so reusing one name means the Dock keeps drawing
+# a stale icon no matter how many times the app is rebuilt or reinstalled.
+"$VPY" tools/stamp_icon.py dist/TubeClipper.app || fail "Could not stamp the icon."
 codesign --force --deep --sign - dist/TubeClipper.app || fail "Ad-hoc code signing failed."
 codesign --verify --deep --strict dist/TubeClipper.app || fail "Code-signature verification failed."
 QT_QPA_PLATFORM=offscreen dist/TubeClipper.app/Contents/MacOS/TubeClipper --selftest \
