@@ -1,0 +1,142 @@
+name: Build release installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: Build macOS (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install ffmpeg
+        run: brew install ffmpeg
+
+      - name: Build and verify DMG
+        shell: bash
+        run: |
+          chmod +x build.sh make_dmg.sh
+          ./make_dmg.sh
+          test -f "dist/TubeClipper-$(python tools/version.py)-macOS-${{ matrix.arch }}.dmg"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: TubeClipper-macOS-${{ matrix.arch }}
+          path: dist/TubeClipper-*-macOS-${{ matrix.arch }}.dmg
+          if-no-files-found: error
+
+  windows:
+    # The same steps as build.bat and make_installer.bat, run directly:
+    # those scripts end on `pause`, which is right for a double-click on a
+    # desktop and wrong for an unattended runner.
+    name: Build Windows installer
+    runs-on: windows-2025
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Icons and bundled ffmpeg
+        shell: pwsh
+        run: |
+          python tools/make_icons.py
+          python tools/fetch_ffmpeg.py
+
+      - name: Tests
+        shell: pwsh
+        run: |
+          python -m tests.test_engine
+          $env:QT_QPA_PLATFORM = "offscreen"
+          python -m tests.test_app
+
+      - name: Freeze and self-test
+        shell: pwsh
+        run: |
+          python -m PyInstaller --clean --noconfirm TubeClipper.spec
+          python tools/version.py --write dist/TubeClipper/VERSION.txt
+          $env:QT_QPA_PLATFORM = "offscreen"
+          & dist/TubeClipper/TubeClipper-check.exe --selftest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $ver = (python tools/version.py).Trim()
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=$ver" installer\TubeClipper.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path "dist\TubeClipper-Setup-$ver.exe")) { throw "installer missing" }
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: TubeClipper-Windows
+          path: dist/TubeClipper-Setup-*.exe
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download installers
+        uses: actions/download-artifact@v8
+        with:
+          pattern: TubeClipper-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create release and attach installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          ls -l release-assets
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes \
+              --title "TubeClipper $GITHUB_REF_NAME"
+          gh release upload "$GITHUB_REF_NAME" release-assets/*.dmg release-assets/*.exe --clobber

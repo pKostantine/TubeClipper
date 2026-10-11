@@ -158,15 +158,15 @@ This creates `dist/TubeClipper.app` and
 `dist/TubeClipper-<version>-macOS-<architecture>.dmg`. ffmpeg and ffprobe are
 bundled inside the app, so the destination Mac does not need Homebrew.
 
-The GitHub Actions workflow in `.github/workflows/macos-release.yml` builds
-native Apple Silicon (`arm64`) and Intel (`x86_64`) DMGs. It can be run
-manually from the Actions page to download workflow artifacts. Pushing a
-version tag builds both installers, creates the matching GitHub Release if
-needed, and attaches both DMGs:
+The GitHub Actions workflow in `.github/workflows/release.yml` builds
+native Apple Silicon (`arm64`) and Intel (`x86_64`) DMGs and the Windows
+`TubeClipper-Setup-<version>.exe` installer. It can be run manually from the
+Actions page to download workflow artifacts. Pushing a version tag builds all
+three, creates the matching GitHub Release if needed, and attaches them:
 
 ```sh
-git tag v1.2.0
-git push origin v1.2.0
+git tag v1.2.1
+git push origin v1.2.1
 ```
 
 The included build is ad-hoc signed, not Apple-notarized, so another Mac will
