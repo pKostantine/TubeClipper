@@ -1608,12 +1608,21 @@ def main():
     app.setApplicationVersion(__version__)
     app.setStyle("Fusion")
 
+    # Qt hands the window icon to the Dock at launch, overriding the bundle's
+    # own icon. So on macOS it must be the .icns, composed to Apple's grid;
+    # the .ico is the full-bleed Windows artwork and shows up as an oversized
+    # square tile. Same order TrackSync uses.
     from . import resource_path
-    for name in ("TubeClipper.ico", "logo_256.png", "logo.png"):
+    names = (("TubeClipper.icns", "TubeClipper.ico", "logo.png")
+             if sys.platform == "darwin"
+             else ("TubeClipper.ico", "TubeClipper.icns", "logo.png"))
+    for name in names:
         path = resource_path("assets", name)
         if os.path.exists(path):
-            app.setWindowIcon(QtGui.QIcon(path))
-            break
+            icon = QtGui.QIcon(path)
+            if not icon.isNull():
+                app.setWindowIcon(icon)
+                break
 
     window = MainWindow()
     window.show()
