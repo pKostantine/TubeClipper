@@ -43,6 +43,18 @@ for this. Instead:
 Only needed once. After that it opens like any other app.
 NOTE
 
-hdiutil create -volname "TubeClipper $VERSION" -srcfolder "$STAGE" \
-    -ov -format UDZO "$DMG" >/dev/null || fail "hdiutil failed."
+# hdiutil intermittently fails with "Resource busy" on CI runners while
+# something (XProtect, Spotlight) still has the staged files open. Retrying
+# after a pause is the standard remedy and costs nothing when it succeeds.
+made=0
+for attempt in 1 2 3 4 5; do
+    if hdiutil create -volname "TubeClipper $VERSION" -srcfolder "$STAGE" \
+        -ov -format UDZO "$DMG" >/dev/null; then
+        made=1
+        break
+    fi
+    printf 'hdiutil attempt %s failed; retrying...\n' "$attempt"
+    sleep $((attempt * 5))
+done
+[ "$made" = 1 ] || fail "hdiutil failed."
 printf '\nDone: %s\n' "$DMG"
