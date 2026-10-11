@@ -275,10 +275,12 @@ class ShortcutsDialog(QtWidgets.QDialog):
         ("I", "Set the in point at the playhead"),
         ("O", "Set the out point at the playhead"),
         ("Ctrl+K", "Add the current selection as a clip"),
+        ("Home / End", "Go to the start / end"),
         ("Left / Right", "Step one frame"),
         ("Shift+Left / Right", "Step one second"),
         ("J / K / L", "Rewind, pause, forward"),
         ("F", "Zoom the timeline to the selection"),
+        ("fn+Ctrl+F / fn+Ctrl+C", "Fill / Center the window (macOS)"),
         ("Shift+F", "Zoom out to the whole video"),
         ("Scroll on timeline", "Zoom around the pointer"),
         ("Shift+scroll", "Pan"),
@@ -787,6 +789,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._act(view_menu, "Zoom &in", "Ctrl+=", lambda: self.step_scale(+1))
         self._act(view_menu, "Zoom &out", "Ctrl+-", lambda: self.step_scale(-1))
         self._act(view_menu, "&Reset zoom", "Ctrl+0", lambda: self.apply_scale(1.0))
+        # On macOS this becomes the real Window menu (see macwindow): the
+        # system fills in Minimize, Zoom, Fill, Center, Move & Resize, Full
+        # Screen Tile and the rest, and fn+Control+F works.  Elsewhere it
+        # offers the basics.
+        self.window_menu = bar.addMenu("&Window")
+        if sys.platform != "darwin":
+            self._act(self.window_menu, "Minimize", "", self.showMinimized)
+            self._act(self.window_menu, "Maximize", "", self.showMaximized)
 
         help_menu = bar.addMenu("&Help")
         self._act(help_menu, "&Keyboard shortcuts", "", lambda: ShortcutsDialog(self).exec())
@@ -810,6 +820,8 @@ class MainWindow(QtWidgets.QMainWindow):
         add("Right", lambda: self.player.nudge(self.player._frame()))
         add("Shift+Left", lambda: self.player.nudge(-1))
         add("Shift+Right", lambda: self.player.nudge(1))
+        add("Home", self.player.go_to_start)
+        add("End", self.player.go_to_end)
 
     def _toggle_play(self):
         # Space belongs to the text box while the user is typing in it.
@@ -884,7 +896,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Reading a link is a network round trip through yt-dlp and takes a
         # few seconds.  Say so on the video surface, which is where the user
         # is looking, rather than only in the status bar.
-        self.player.busy("Reading the link")
+        self.player.begin_load("Reading the link")
         self.title_label.setText("Reading the link…")
         self.meta_label.setText("")
         self.live_badge.hide()
@@ -892,10 +904,20 @@ class MainWindow(QtWidgets.QMainWindow):
 
         cookies = self._prefs.get("cookies") or None
         task = jobs.Task(source.probe, text, cookies)
+        task.signals.progress.connect(
+            lambda fraction, label, t=task: self._probe_progress(t, fraction, label))
         task.signals.done.connect(self._loaded)
         task.signals.failed.connect(self._load_failed)
         self._probe_task = task
         self.pool.start(task)
+
+    def _probe_progress(self, task, fraction, label):
+        """Reading the link is the first third of the load."""
+        if task is not self._probe_task:
+            return
+        share = 0.34
+        self.player.progress(label or "Reading the link", fraction * share,
+                             min(share, fraction * share + 0.08))
 
     def _loaded(self, src):
         self.load_btn.setEnabled(True)
@@ -913,9 +935,18 @@ class MainWindow(QtWidgets.QMainWindow):
         if src.fps:
             pieces.append(f"{src.fps:g} fps")
         self.meta_label.setText("  ·  ".join(pieces))
-        self.live_badge.setVisible(bool(src.is_live))
+        self.live_badge.setText("PROCESSING" if src.still_processing else "LIVE")
+        self.live_badge.setToolTip(
+            "YouTube is still processing this stream" if src.still_processing
+            else "This stream is live")
+        self.live_badge.setVisible(bool(src.is_live or src.still_processing))
 
-        if src.is_live:
+        if src.still_processing:
+            self.status.showMessage(
+                "YouTube is still processing this stream, so only part of it "
+                "may be available and the length can still change. Load it "
+                "again later for the full video.", 12000)
+        elif src.is_live:
             self.status.showMessage(
                 "This stream is still live — only the part already broadcast "
                 "can be clipped.", 8000)
@@ -940,7 +971,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.player.load(
                 stream.url, src.fps or stream.fps,
                 audio_url=audio.url if audio is not None else "")
-            if preview.note:
+            if src.still_processing:
+                pass                    # keep the processing notice up
+            elif preview.note:
                 self.status.showMessage(preview.note, 8000)
             else:
                 self.status.showMessage(
@@ -954,7 +987,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.load_btn.setText("Load")
         self.status.showMessage("Could not read that link.", 5000)
         self.title_label.setText("Nothing loaded")
-        self.player.message("Could not read that link.")
+        if "still processing" in message:
+            self.player.message("YouTube is still processing this video.\n"
+                                "Try again in a few minutes.")
+        else:
+            self.player.message("Could not read that link.")
         self._warn("Could not read that link", message)
 
     def _load_poster(self, url):
@@ -1054,17 +1091,23 @@ class MainWindow(QtWidgets.QMainWindow):
 
         task = None
 
-        def make():
+        def make(report):
             return engine.grab_frames(
                 stream.url, times, out_dir, stream.headers,
-                cancel=lambda: task.cancelled())
+                cancel=lambda: task.cancelled(), report=report)
 
         task = jobs.Task(make)
+        task.signals.progress.connect(
+            lambda fraction, _text, t=task: self._thumb_progress(t, fraction))
         task.signals.done.connect(
             lambda made, key=view_key: self._thumbs_ready(key, made))
         self._thumb_task = task
         self.timeline.set_strip_busy(True)
         self.pool.start(task)
+
+    def _thumb_progress(self, task, fraction):
+        if task is self._thumb_task:
+            self.timeline.set_strip_progress(fraction)
 
     def _thumbs_ready(self, key, made):
         request = self._thumb_request
@@ -1626,4 +1669,14 @@ def main():
 
     window = MainWindow()
     window.show()
+    if sys.platform == "darwin":
+        from . import macwindow
+        # After the first event-loop pass, once Qt has built the native
+        # menu bar.
+        QtCore.QTimer.singleShot(0, macwindow.install_window_menu)
+        # Qt rebuilds the menu bar when the window becomes active, which
+        # hides the menu again, so put it back each time.
+        app.applicationStateChanged.connect(
+            lambda state: state == QtCore.Qt.ApplicationActive and
+            QtCore.QTimer.singleShot(0, macwindow.install_window_menu))
     return app.exec()

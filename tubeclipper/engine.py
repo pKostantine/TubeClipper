@@ -452,7 +452,8 @@ def clear_cache():
 # thumbnails for the timeline
 # --------------------------------------------------------------------------
 
-def grab_frames(url, times, out_dir, headers=None, width=160, cancel=None):
+def grab_frames(url, times, out_dir, headers=None, width=160, cancel=None,
+                report=None):
     """One JPEG per timestamp, for the filmstrip under the player.
 
     Each frame is its own ffmpeg run with ``-ss`` before ``-i``: a single
@@ -462,9 +463,12 @@ def grab_frames(url, times, out_dir, headers=None, width=160, cancel=None):
     """
     os.makedirs(out_dir, exist_ok=True)
     made = []
+    total = max(1, len(times))
     for index, t in enumerate(times):
         if cancel is not None and cancel():
             break
+        if report is not None:
+            report(index / total, f"Frame {index + 1} of {total}")
         path = os.path.join(out_dir, f"thumb_{index:04d}.jpg")
         if os.path.exists(path):
             made.append((t, path))

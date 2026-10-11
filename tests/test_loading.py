@@ -86,23 +86,34 @@ class MediaStatus(unittest.TestCase):
         self.assertFalse(self.pane.btn_play.isEnabled())
         self.assertIn("Loading video", self.pane.overlay.text())
 
+    # Once playing, buffering is shown beside the transport, because the
+    # native video layer on macOS paints over anything placed on top of it.
+
     def test_buffering_says_buffering(self):
         self.pane._on_media_status(self.S.BufferingMedia)
-        self.assertIn("Buffering", self.pane.overlay.text())
+        self.assertIn("Buffering", self.pane.buffer_label.text())
+        self.assertFalse(self.pane.buffer_label.isHidden())
 
     def test_buffer_progress_is_shown_while_buffering(self):
         self.pane._on_media_status(self.S.BufferingMedia)
         self.pane._on_buffer(0.42)
-        self.assertIn("42%", self.pane.overlay.text())
+        self.assertIn("42%", self.pane.buffer_label.text())
 
     def test_buffer_progress_is_ignored_once_playing(self):
         self.pane._on_media_status(self.S.BufferedMedia)
         self.pane._on_buffer(0.5)
+        self.assertTrue(self.pane.buffer_label.isHidden())
         self.assertFalse(self.pane.overlay.isVisibleTo(self.pane.surface))
 
     def test_stalled_says_so(self):
         self.pane._on_media_status(self.S.StalledMedia)
-        self.assertIn("Waiting for data", self.pane.overlay.text())
+        self.assertIn("Waiting for data", self.pane.buffer_label.text())
+
+    def test_video_steps_aside_for_the_caption(self):
+        self.pane.load("file:///nonexistent.mp4")
+        self.assertTrue(self.pane.video.isHidden())
+        self.assertTrue(self.pane.placeholder.isHidden())
+        self.assertFalse(self.pane.overlay.isHidden())
 
     def test_loaded_enables_the_transport_and_clears_the_overlay(self):
         self.pane._on_media_status(self.S.LoadingMedia)

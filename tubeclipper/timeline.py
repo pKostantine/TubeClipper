@@ -60,6 +60,7 @@ class TimelineView(QtWidgets.QWidget):
         self._playhead = 0.0
         self._thumbs = []          # [(t, QPixmap)]
         self._strip_busy = False
+        self._strip_progress = None
         self._clips = []           # [(start, end, name)]
         self._drag = None          # "in" | "out" | "region" | "scrub" | "pan"
         self._drag_anchor = 0.0
@@ -79,7 +80,7 @@ class TimelineView(QtWidgets.QWidget):
         self._duration = max(0.0, float(seconds or 0.0))
         self._view = (0.0, self._duration)
         self._in = 0.0
-        self._out = min(self._duration, 30.0) if self._duration else 0.0
+        self._out = self._duration          # whole video until the user marks a clip
         self._playhead = 0.0
         self._thumbs = []
         self._clips = []
@@ -115,6 +116,7 @@ class TimelineView(QtWidgets.QWidget):
     def set_thumbs(self, thumbs):
         self._thumbs = list(thumbs or [])
         self._strip_busy = False
+        self._strip_progress = None
         self.update()
 
     def set_strip_busy(self, busy):
@@ -125,7 +127,13 @@ class TimelineView(QtWidgets.QWidget):
         Labelling it stops it reading as one.
         """
         self._strip_busy = bool(busy)
+        self._strip_progress = 0.0 if busy else None
         self.update()
+
+    def set_strip_progress(self, fraction):
+        if self._strip_busy:
+            self._strip_progress = max(0.0, min(1.0, float(fraction)))
+            self.update()
 
     def set_clips(self, clips):
         self._clips = list(clips or [])
@@ -231,6 +239,19 @@ class TimelineView(QtWidgets.QWidget):
         p.setPen(BORDER)
         p.drawRect(self.rect().adjusted(0, 0, -1, -1))
 
+    def _paint_strip_progress(self, p, strip):
+        if not self._strip_busy or self._strip_progress is None:
+            return
+        k = self._k()
+        h = max(2.0, 3.0 * k)
+        bar = QtCore.QRectF(strip.left(), strip.bottom() - h + 1,
+                            strip.width() * self._strip_progress, h)
+        p.save()
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(SEL_EDGE)
+        p.drawRect(bar)
+        p.restore()
+
     def _paint_thumbs(self, p, strip):
         if not self._thumbs:
             if self._strip_busy and self._duration > 0:
@@ -239,8 +260,13 @@ class TimelineView(QtWidgets.QWidget):
                 font = p.font()
                 font.setPointSizeF(max(6.0, 8.0 * self._k()))
                 p.setFont(font)
-                p.drawText(strip, QtCore.Qt.AlignCenter, "Building filmstrip…")
+                caption = "Building filmstrip…"
+                if self._strip_progress is not None:
+                    caption = (f"Building filmstrip  "
+                               f"{int(self._strip_progress * 100)}%")
+                p.drawText(strip, QtCore.Qt.AlignCenter, caption)
                 p.restore()
+                self._paint_strip_progress(p, strip)
             return
         p.save()
         p.setClipRect(strip)
@@ -252,6 +278,7 @@ class TimelineView(QtWidgets.QWidget):
                                         QtCore.Qt.SmoothTransformation)
             p.drawPixmap(x, strip.top(), scaled)
         p.restore()
+        self._paint_strip_progress(p, strip)
 
     def _paint_ruler(self, p, ruler, k):
         if self._duration <= 0:

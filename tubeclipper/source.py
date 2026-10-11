@@ -84,6 +84,7 @@ class Source:
     thumbnail: str = ""
     is_live: bool = False
     was_live: bool = False
+    live_status: str = ""
     heights: tuple = ()
     fps: float = 0.0
     upload_date: str = ""
@@ -92,6 +93,15 @@ class Source:
     @property
     def display_duration(self):
         return format_timecode(self.duration)
+
+    @property
+    def still_processing(self):
+        """A finished stream YouTube has not turned into a normal video yet.
+
+        Until it does, only part of the broadcast may be available and the
+        duration can still change.
+        """
+        return self.live_status == "post_live"
 
 
 # --------------------------------------------------------------------------
@@ -119,7 +129,27 @@ def normalise(text):
     return text
 
 
-def probe(url, cookies_from_browser=None, on_log=None):
+# yt-dlp logs each request it makes while reading a link.  These are the
+# milestones, in order, with how far through reading the link each one is.
+_PROBE_STEPS = (
+    (re.compile(r"Extracting URL", re.I), 0.08, "Reading the link"),
+    (re.compile(r"Downloading webpage", re.I), 0.20, "Contacting YouTube"),
+    (re.compile(r"client config|player API JSON|Downloading player|"
+                r"initial data|API JSON", re.I), 0.50, "Reading the video details"),
+    (re.compile(r"m3u8|MPD|manifest|Downloading .*format", re.I),
+     0.85, "Reading the stream formats"),
+)
+
+
+def probe_step(message):
+    """Map a yt-dlp log line to ``(fraction, label)``, or None."""
+    for pattern, fraction, label in _PROBE_STEPS:
+        if pattern.search(message or ""):
+            return fraction, label
+    return None
+
+
+def probe(url, cookies_from_browser=None, on_log=None, report=None):
     """Read a link's metadata without downloading anything.
 
     ``cookies_from_browser`` is passed through to yt-dlp for the videos
@@ -138,8 +168,15 @@ def probe(url, cookies_from_browser=None, on_log=None):
     }
     if cookies_from_browser:
         opts["cookiesfrombrowser"] = (cookies_from_browser,)
-    if on_log:
-        opts["logger"] = _Logger(on_log)
+    if on_log or report:
+        def sink(message):
+            if on_log:
+                on_log(message)
+            if report:
+                step = probe_step(message)
+                if step:
+                    report(*step)
+        opts["logger"] = _Logger(sink)
 
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -174,6 +211,7 @@ def from_info(info, url=""):
         thumbnail=info.get("thumbnail") or "",
         is_live=bool(info.get("is_live")),
         was_live=bool(info.get("was_live")),
+        live_status=info.get("live_status") or "",
         heights=tuple(heights),
         fps=fps,
         upload_date=info.get("upload_date") or "",
@@ -204,7 +242,11 @@ def _readable(exc):
     text = str(exc)
     text = re.sub(r"^ERROR:\s*", "", text)
     text = re.sub(r"\[[^\]]+\]\s*[\w-]+:\s*", "", text, count=1)
-    return text.strip() or "The link could not be read."
+    text = text.strip() or "The link could not be read."
+    if re.search(r"\bprocess(ed|ing)\b", text, re.I):
+        return ("YouTube is still processing this video. Try again in a few "
+                "minutes.\n\n" + text)
+    return text
 
 
 # --------------------------------------------------------------------------

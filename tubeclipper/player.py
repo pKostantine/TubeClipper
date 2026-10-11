@@ -61,6 +61,10 @@ def _transport_icon(name):
     elif name == "next":
         polygon(((13, 14), (13, 50), (44, 32)))
         painter.drawLine(QtCore.QPointF(52, 13), QtCore.QPointF(52, 51))
+    elif name == "step_back":
+        polygon(((44, 16), (44, 48), (20, 32)))
+    elif name == "step_fwd":
+        polygon(((20, 16), (20, 48), (44, 32)))
     elif name == "forward":
         polygon(((11, 14), (11, 50), (32, 32)))
         polygon(((35, 14), (35, 50), (56, 32)))
@@ -69,6 +73,46 @@ def _transport_icon(name):
 
     painter.end()
     return QtGui.QIcon(canvas)
+
+
+class LoadingOverlay(QtWidgets.QLabel):
+    """Caption over the video, with a progress bar when there is a number.
+
+    A percentage that moves is what separates "still working" from "hung";
+    a caption on its own cannot do that.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._fraction = None
+
+    def fraction(self):
+        return self._fraction
+
+    def set_fraction(self, fraction):
+        self._fraction = (None if fraction is None
+                          else max(0.0, min(1.0, float(fraction))))
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self._fraction is None:
+            return
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        width = max(80.0, min(280.0, self.width() * 0.5))
+        height = 6.0
+        lines = self.text().count("\n") + 1
+        top = (self.height() + lines * self.fontMetrics().height()) / 2 + 10
+        left = (self.width() - width) / 2
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(QtGui.QColor(255, 255, 255, 40))
+        painter.drawRoundedRect(QtCore.QRectF(left, top, width, height), 3, 3)
+        painter.setBrush(QtGui.QColor("#4a9eff"))
+        painter.drawRoundedRect(
+            QtCore.QRectF(left, top, max(height, width * self._fraction), height),
+            3, 3)
+        painter.end()
 
 
 class PlayerPane(QtWidgets.QWidget):
@@ -97,9 +141,17 @@ class PlayerPane(QtWidgets.QWidget):
         self._pending_seek = None
         self._busy_text = ""
         self._busy_dots = 0
+        # A load runs from 0% to 100% across several stages (reading the
+        # link, opening the video, opening the audio).  Real milestones set
+        # the floor; between them the bar creeps toward the stage ceiling so
+        # a slow network still shows movement, and it never goes backwards.
+        self._loading = False
+        self._load_ceiling = None
+        self._has_media = False
         self._transport_icons = {
             name: _transport_icon(name)
-            for name in ("back", "previous", "play", "pause", "next", "forward")
+            for name in ("back", "previous", "step_back", "play", "pause",
+                         "step_fwd", "next", "forward")
         }
 
         outer = QtWidgets.QVBoxLayout(self)
@@ -156,7 +208,7 @@ class PlayerPane(QtWidgets.QWidget):
         # Sits on top of the video rather than in the layout, so the frame
         # underneath keeps its size and the message appears over the
         # picture instead of pushing it around.
-        self.overlay = QtWidgets.QLabel(self.surface)
+        self.overlay = LoadingOverlay(self.surface)
         self.overlay.setAlignment(QtCore.Qt.AlignCenter)
         self.overlay.setWordWrap(True)
         self.overlay.setStyleSheet(
@@ -193,6 +245,8 @@ class PlayerPane(QtWidgets.QWidget):
         row.setSpacing(6)
 
         icons = self._transport_icons
+        self.btn_start = self._button(
+            icons["previous"], "Go to the start (Home)", self.go_to_start)
         self.btn_back10 = self._button(
             icons["back"], "Back ten seconds", lambda: self.nudge(-10),
             width=60, text="10s")
@@ -200,22 +254,25 @@ class PlayerPane(QtWidgets.QWidget):
             icons["back"], "Back one second", lambda: self.nudge(-1),
             width=52, text="1s")
         self.btn_frame_back = self._button(
-            icons["previous"], "Back one frame (Left)",
-            lambda: self.nudge(-self._frame()))
+            icons["step_back"], "Back one frame (Left)",
+            lambda: self.nudge(-self._frame()), width=52, text="1f")
         self.btn_play = self._button(
             icons["play"], "Play / pause (Space)", self.toggle, 44)
         self.btn_frame_fwd = self._button(
-            icons["next"], "Forward one frame (Right)",
-            lambda: self.nudge(self._frame()))
+            icons["step_fwd"], "Forward one frame (Right)",
+            lambda: self.nudge(self._frame()), width=52, text="1f",
+            icon_after=True)
         self.btn_fwd1 = self._button(
             icons["forward"], "Forward one second", lambda: self.nudge(1),
             width=52, text="1s", icon_after=True)
         self.btn_fwd10 = self._button(
             icons["forward"], "Forward ten seconds", lambda: self.nudge(10),
             width=60, text="10s", icon_after=True)
-        for b in (self.btn_back10, self.btn_back1, self.btn_frame_back,
-                  self.btn_play, self.btn_frame_fwd, self.btn_fwd1,
-                  self.btn_fwd10):
+        self.btn_end = self._button(
+            icons["next"], "Go to the end (End)", self.go_to_end)
+        for b in (self.btn_start, self.btn_back10, self.btn_back1,
+                  self.btn_frame_back, self.btn_play, self.btn_frame_fwd,
+                  self.btn_fwd1, self.btn_fwd10, self.btn_end):
             row.addWidget(b)
 
         row.addSpacing(8)
@@ -227,6 +284,14 @@ class PlayerPane(QtWidgets.QWidget):
         font.setStyleHint(QtGui.QFont.Monospace)
         self.readout.setFont(font)
         row.addWidget(self.readout)
+
+        # Buffering after the video is up is reported here rather than over
+        # the picture: on macOS the video surface is a native layer that
+        # paints over any widget placed on top of it.
+        self.buffer_label = QtWidgets.QLabel("")
+        self.buffer_label.setStyleSheet("color:#8cc4ff;")
+        self.buffer_label.hide()
+        row.addWidget(self.buffer_label)
 
         row.addStretch(1)
 
@@ -296,9 +361,9 @@ class PlayerPane(QtWidgets.QWidget):
         self._audio_ready = not self._split_audio
         self._pending_seek = None
         self._set_ready(False)
-        self.placeholder.hide()
-        self.video.show()
-        self.busy("Loading video")
+        self._has_media = True
+        self._loading = True
+        self.progress("Loading video", 0.35, 0.80)
         self.player.setSource(QtCore.QUrl(url))
         self.audio_player.setSource(
             QtCore.QUrl(audio_url) if audio_url else QtCore.QUrl())
@@ -313,45 +378,114 @@ class PlayerPane(QtWidgets.QWidget):
         self._split_audio = False
         self._video_ready = False
         self._audio_ready = True
-        self.video.hide()
-        self.placeholder.show()
+        self._has_media = False
         self._set_ready(False)
+        self._loading = False
         self.idle()
 
     # -- the overlay -----------------------------------------------------
+
+    def begin_load(self, text="Reading the link"):
+        """Start a fresh load at 0%."""
+        self._loading = True
+        self.overlay.set_fraction(0.0)
+        self.progress(text, 0.0, 0.05)
+
+    def loading(self):
+        return self._loading
+
+    def progress(self, text, fraction, ceiling=None):
+        """Show a loading step with a percentage.
+
+        ``fraction`` is how far the load has really got.  ``ceiling`` is
+        how far the bar may creep while it waits for the next milestone.
+        The number never goes backwards within a load.
+        """
+        shown = self.overlay.fraction() or 0.0
+        value = max(shown, float(fraction))
+        self._load_ceiling = max(value, ceiling) if ceiling is not None else None
+        self._busy_text = text
+        self._busy_dots = 0
+        self.overlay.set_fraction(value)
+        self._render_busy()
+        self._show_overlay()
+        self._busy_timer.start()
 
     def busy(self, text):
         """Show a message over the video and animate it."""
         self._busy_text = text
         self._busy_dots = 0
-        self._place_overlay()
-        self.overlay.setText(text + "…")
-        self.overlay.show()
-        self.overlay.raise_()
+        self._load_ceiling = None
+        self.overlay.set_fraction(None)
+        self._render_busy()
+        self._show_overlay()
         self._busy_timer.start()
 
     def message(self, text):
         """Show a message over the video that is not going to change."""
+        self._loading = False
         self._busy_timer.stop()
         self._busy_text = ""
-        self._place_overlay()
+        self._load_ceiling = None
+        self.overlay.set_fraction(None)
         self.overlay.setText(text)
-        self.overlay.show()
-        self.overlay.raise_()
+        self._show_overlay()
 
     def idle(self):
         self._busy_timer.stop()
         self._busy_text = ""
+        self._load_ceiling = None
+        self.overlay.set_fraction(None)
         self.overlay.hide()
+        self._show_surface()
+
+    def _show_overlay(self):
+        # The native video layer would cover the caption, so it steps aside
+        # while there is something to say, along with the placeholder text.
+        if self.video is not None:
+            self.video.hide()
+        self.placeholder.hide()
+        self._place_overlay()
+        self.overlay.show()
+        self.overlay.raise_()
+
+    def _show_surface(self):
+        if self.video is not None and self._has_media:
+            self.placeholder.hide()
+            self.video.show()
+        else:
+            if self.video is not None:
+                self.video.hide()
+            self.placeholder.show()
+
+    def _set_buffering(self, text):
+        if text:
+            self.buffer_label.setText(text)
+            self.buffer_label.show()
+        else:
+            self.buffer_label.hide()
+
+    def _render_busy(self):
+        fraction = self.overlay.fraction()
+        if fraction is None:
+            self.overlay.setText(self._busy_text + "." * self._busy_dots
+                                 if self._busy_dots else self._busy_text + "…")
+        else:
+            self.overlay.setText(f"{self._busy_text}  {int(fraction * 100)}%")
 
     def _tick_busy(self):
         # A tick that arrives after the caption became a fixed message must
-        # not overwrite it with a lone ellipsis.
+        # not overwrite it.
         if not self._busy_text:
             self._busy_timer.stop()
             return
-        self._busy_dots = (self._busy_dots + 1) % 4
-        self.overlay.setText(self._busy_text + "." * self._busy_dots)
+        fraction = self.overlay.fraction()
+        if fraction is None:
+            self._busy_dots = (self._busy_dots + 1) % 4
+        elif self._load_ceiling is not None and fraction < self._load_ceiling:
+            self.overlay.set_fraction(
+                fraction + (self._load_ceiling - fraction) * 0.045)
+        self._render_busy()
 
     def _place_overlay(self):
         self.overlay.setGeometry(self.surface.rect().adjusted(1, 1, -1, -1))
@@ -373,13 +507,15 @@ class PlayerPane(QtWidgets.QWidget):
     def _recompute_ready(self):
         """Ready only when every stream the preview needs has loaded."""
         if self._video_ready and self._audio_ready:
+            self._loading = False
             self._set_ready(True)
             self.idle()
             if self._pending_seek is not None:
                 seconds, self._pending_seek = self._pending_seek, None
                 self.seek(seconds)
         elif self._video_ready and not self._audio_ready:
-            self.busy("Loading audio")
+            self._loading = True
+            self.progress("Loading audio", 0.85, 0.98)
 
     # -- transport -------------------------------------------------------
 
@@ -418,6 +554,23 @@ class PlayerPane(QtWidgets.QWidget):
         if self.playing():
             self.pause()
         self.seek(self.position() + seconds)
+
+    def duration(self):
+        if not HAVE_MEDIA or self.player is None:
+            return 0.0
+        return max(0.0, self.player.duration() / 1000.0)
+
+    def go_to_start(self):
+        if self.playing():
+            self.pause()
+        self.seek(0.0)
+
+    def go_to_end(self):
+        if self.playing():
+            self.pause()
+        end = self.duration()
+        if end > 0:
+            self.seek(max(0.0, end - self._frame()))
 
     def seek(self, seconds):
         """Seek, or remember the request until the media can accept it.
@@ -491,6 +644,7 @@ class PlayerPane(QtWidgets.QWidget):
             self.audio_player.setPosition(max(0, position))
 
     def _on_error(self, _error, text=""):
+        self._loading = False
         self._video_ready = False
         self._set_ready(False)
         self.message(text or "This video could not be previewed.")
@@ -519,25 +673,38 @@ class PlayerPane(QtWidgets.QWidget):
         S = QMediaPlayer.MediaStatus
         if status == S.LoadingMedia:
             self._video_ready = False
+            self._loading = True
             self._set_ready(False)
-            self.busy("Loading video")
+            self.progress("Loading video", 0.40, 0.80)
         elif status == S.BufferingMedia:
-            self.busy("Buffering")
+            if self._loading:
+                self.progress("Buffering video",
+                              0.40 + 0.40 * self.player.bufferProgress(), 0.85)
+            else:
+                self._set_buffering("Buffering…")
         elif status == S.StalledMedia:
-            self.busy("Waiting for data")
+            if self._loading:
+                self.progress("Waiting for data",
+                              self.overlay.fraction() or 0.0,
+                              self._load_ceiling)
+            else:
+                self._set_buffering("Waiting for data…")
         elif status in (S.LoadedMedia, S.BufferedMedia):
+            self._set_buffering("")
             self._video_ready = True
             self._recompute_ready()
         elif status == S.InvalidMedia:
+            self._loading = False
             self._video_ready = False
             self._set_ready(False)
             self.message("This video could not be previewed.")
         elif status == S.NoMedia:
+            self._loading = False
             self._video_ready = False
             self._set_ready(False)
             self.idle()
         elif status == S.EndOfMedia:
-            self.idle()
+            self._set_buffering("")
 
     def _on_audio_status(self, status):
         """The second stream, when the source is adaptive."""
@@ -555,7 +722,10 @@ class PlayerPane(QtWidgets.QWidget):
             self._audio_ready = False
 
     def _on_buffer(self, fraction):
-        # Only while actually buffering: during normal playback Qt keeps
-        # emitting this and the caption would flicker for no reason.
-        if self._busy_text.startswith(("Buffering", "Waiting")) and fraction < 1.0:
-            self.overlay.setText(f"Buffering… {fraction:.0%}")
+        if self._loading and self._busy_text.startswith(("Buffering", "Waiting")):
+            self.progress("Buffering video", 0.40 + 0.40 * fraction, 0.85)
+        elif self.buffer_label.isVisible() or not self.buffer_label.isHidden():
+            if fraction < 1.0:
+                self._set_buffering(f"Buffering {int(fraction * 100)}%")
+            else:
+                self._set_buffering("")
