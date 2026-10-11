@@ -881,6 +881,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.load_btn.setEnabled(False)
         self.load_btn.setText("Loading…")
         self.status.showMessage("Reading the link…")
+        # Reading a link is a network round trip through yt-dlp and takes a
+        # few seconds.  Say so on the video surface, which is where the user
+        # is looking, rather than only in the status bar.
+        self.player.busy("Reading the link")
+        self.title_label.setText("Reading the link…")
+        self.meta_label.setText("")
+        self.live_badge.hide()
+        self.thumb.clear()
 
         cookies = self._prefs.get("cookies") or None
         task = jobs.Task(source.probe, text, cookies)
@@ -922,6 +930,8 @@ class MainWindow(QtWidgets.QMainWindow):
             preview = source.preview_stream(src.info)
         except Exception as exc:
             self.player.clear()
+            self.player.message("No preview available for this video.\n"
+                                "You can still mark a clip and export it.")
             self.status.showMessage(f"No preview available: {exc}", 8000)
         else:
             stream = preview.video
@@ -943,6 +953,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.load_btn.setEnabled(True)
         self.load_btn.setText("Load")
         self.status.showMessage("Could not read that link.", 5000)
+        self.title_label.setText("Nothing loaded")
+        self.player.message("Could not read that link.")
         self._warn("Could not read that link", message)
 
     def _load_poster(self, url):
@@ -1051,6 +1063,7 @@ class MainWindow(QtWidgets.QMainWindow):
         task.signals.done.connect(
             lambda made, key=view_key: self._thumbs_ready(key, made))
         self._thumb_task = task
+        self.timeline.set_strip_busy(True)
         self.pool.start(task)
 
     def _thumbs_ready(self, key, made):

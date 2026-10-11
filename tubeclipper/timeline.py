@@ -59,6 +59,7 @@ class TimelineView(QtWidgets.QWidget):
         self._out = 0.0
         self._playhead = 0.0
         self._thumbs = []          # [(t, QPixmap)]
+        self._strip_busy = False
         self._clips = []           # [(start, end, name)]
         self._drag = None          # "in" | "out" | "region" | "scrub" | "pan"
         self._drag_anchor = 0.0
@@ -113,6 +114,17 @@ class TimelineView(QtWidgets.QWidget):
 
     def set_thumbs(self, thumbs):
         self._thumbs = list(thumbs or [])
+        self._strip_busy = False
+        self.update()
+
+    def set_strip_busy(self, busy):
+        """Say the filmstrip is still being fetched.
+
+        Frames are pulled one ffmpeg call at a time over the network, so an
+        empty strip is a normal intermediate state rather than a failure.
+        Labelling it stops it reading as one.
+        """
+        self._strip_busy = bool(busy)
         self.update()
 
     def set_clips(self, clips):
@@ -221,6 +233,14 @@ class TimelineView(QtWidgets.QWidget):
 
     def _paint_thumbs(self, p, strip):
         if not self._thumbs:
+            if self._strip_busy and self._duration > 0:
+                p.save()
+                p.setPen(TEXT)
+                font = p.font()
+                font.setPointSizeF(max(6.0, 8.0 * self._k()))
+                p.setFont(font)
+                p.drawText(strip, QtCore.Qt.AlignCenter, "Building filmstrip…")
+                p.restore()
             return
         p.save()
         p.setClipRect(strip)

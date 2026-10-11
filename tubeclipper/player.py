@@ -77,6 +77,7 @@ class PlayerPane(QtWidgets.QWidget):
     positionChanged = QtCore.Signal(float)
     durationChanged = QtCore.Signal(float)
     playingChanged = QtCore.Signal(bool)
+    readyChanged = QtCore.Signal(bool)
     errored = QtCore.Signal(str)
     markIn = QtCore.Signal(float)
     markOut = QtCore.Signal(float)
@@ -87,6 +88,15 @@ class PlayerPane(QtWidgets.QWidget):
         self._seeking = False
         self._split_audio = False
         self._buttons = []
+        # Readiness is tracked per stream.  With an adaptive source the
+        # audio is a second download, and treating the video's "loaded" as
+        # the whole story gives you a few seconds of silent playback.
+        self._ready = False
+        self._video_ready = False
+        self._audio_ready = True
+        self._pending_seek = None
+        self._busy_text = ""
+        self._busy_dots = 0
         self._transport_icons = {
             name: _transport_icon(name)
             for name in ("back", "previous", "play", "pause", "next", "forward")
@@ -131,6 +141,9 @@ class PlayerPane(QtWidgets.QWidget):
             self.player.playbackStateChanged.connect(self._on_state)
             self.player.errorOccurred.connect(self._on_error)
             self.audio_player.errorOccurred.connect(self._on_audio_error)
+            self.player.mediaStatusChanged.connect(self._on_media_status)
+            self.player.bufferProgressChanged.connect(self._on_buffer)
+            self.audio_player.mediaStatusChanged.connect(self._on_audio_status)
         else:                                        # pragma: no cover
             self.video = None
             self.player = None
@@ -139,6 +152,22 @@ class PlayerPane(QtWidgets.QWidget):
             self.split_audio = None
             self.placeholder.setText("Qt Multimedia is unavailable:\n" + MEDIA_ERROR)
             surface_layout.addWidget(self.placeholder)
+
+        # Sits on top of the video rather than in the layout, so the frame
+        # underneath keeps its size and the message appears over the
+        # picture instead of pushing it around.
+        self.overlay = QtWidgets.QLabel(self.surface)
+        self.overlay.setAlignment(QtCore.Qt.AlignCenter)
+        self.overlay.setWordWrap(True)
+        self.overlay.setStyleSheet(
+            "background: rgba(10,12,16,190); color:#d5dae2; border-radius:6px;")
+        self.overlay.hide()
+
+        # The ellipsis animates, because a caption that never changes during
+        # a thirty-second buffer is indistinguishable from a frozen window.
+        self._busy_timer = QtCore.QTimer(self)
+        self._busy_timer.setInterval(450)
+        self._busy_timer.timeout.connect(self._tick_busy)
 
         outer.addWidget(self.surface, 1)
         outer.addLayout(self._transport())
@@ -251,19 +280,28 @@ class PlayerPane(QtWidgets.QWidget):
             widget.setEnabled(bool(on) and HAVE_MEDIA)
 
     def load(self, url, fps=0.0, audio_url=""):
-        """Load preview video and an optional separate audio stream."""
+        """Load preview video and an optional separate audio stream.
+
+        The transport stays disabled until the streams report themselves
+        loaded.  Opening a YouTube stream takes a few seconds, and buttons
+        that are live but do nothing are what makes an app feel broken.
+        """
         if not HAVE_MEDIA:
             return
         self._fps = fps or 25.0
         self.player.stop()
         self.audio_player.stop()
         self._split_audio = bool(audio_url)
+        self._video_ready = False
+        self._audio_ready = not self._split_audio
+        self._pending_seek = None
+        self._set_ready(False)
         self.placeholder.hide()
         self.video.show()
+        self.busy("Loading video")
         self.player.setSource(QtCore.QUrl(url))
         self.audio_player.setSource(
             QtCore.QUrl(audio_url) if audio_url else QtCore.QUrl())
-        self.set_enabled(True)
 
     def clear(self):
         if not HAVE_MEDIA:
@@ -273,9 +311,75 @@ class PlayerPane(QtWidgets.QWidget):
         self.player.setSource(QtCore.QUrl())
         self.audio_player.setSource(QtCore.QUrl())
         self._split_audio = False
+        self._video_ready = False
+        self._audio_ready = True
         self.video.hide()
         self.placeholder.show()
-        self.set_enabled(False)
+        self._set_ready(False)
+        self.idle()
+
+    # -- the overlay -----------------------------------------------------
+
+    def busy(self, text):
+        """Show a message over the video and animate it."""
+        self._busy_text = text
+        self._busy_dots = 0
+        self._place_overlay()
+        self.overlay.setText(text + "…")
+        self.overlay.show()
+        self.overlay.raise_()
+        self._busy_timer.start()
+
+    def message(self, text):
+        """Show a message over the video that is not going to change."""
+        self._busy_timer.stop()
+        self._busy_text = ""
+        self._place_overlay()
+        self.overlay.setText(text)
+        self.overlay.show()
+        self.overlay.raise_()
+
+    def idle(self):
+        self._busy_timer.stop()
+        self._busy_text = ""
+        self.overlay.hide()
+
+    def _tick_busy(self):
+        # A tick that arrives after the caption became a fixed message must
+        # not overwrite it with a lone ellipsis.
+        if not self._busy_text:
+            self._busy_timer.stop()
+            return
+        self._busy_dots = (self._busy_dots + 1) % 4
+        self.overlay.setText(self._busy_text + "." * self._busy_dots)
+
+    def _place_overlay(self):
+        self.overlay.setGeometry(self.surface.rect().adjusted(1, 1, -1, -1))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._place_overlay()
+
+    def ready(self):
+        return self._ready
+
+    def _set_ready(self, ready):
+        if ready == self._ready:
+            return
+        self._ready = ready
+        self.set_enabled(ready)
+        self.readyChanged.emit(ready)
+
+    def _recompute_ready(self):
+        """Ready only when every stream the preview needs has loaded."""
+        if self._video_ready and self._audio_ready:
+            self._set_ready(True)
+            self.idle()
+            if self._pending_seek is not None:
+                seconds, self._pending_seek = self._pending_seek, None
+                self.seek(seconds)
+        elif self._video_ready and not self._audio_ready:
+            self.busy("Loading audio")
 
     # -- transport -------------------------------------------------------
 
@@ -316,10 +420,20 @@ class PlayerPane(QtWidgets.QWidget):
         self.seek(self.position() + seconds)
 
     def seek(self, seconds):
+        """Seek, or remember the request until the media can accept it.
+
+        Dragging the timeline during the first few seconds used to do
+        nothing at all, silently.  Holding the position and applying it on
+        load means the gesture lands where the user put it.
+        """
         if not HAVE_MEDIA or self.player is None:
             return
+        seconds = max(0.0, seconds)
+        if not self._ready:
+            self._pending_seek = seconds
+            return
         self._seeking = True
-        position = int(max(0.0, seconds) * 1000)
+        position = int(seconds * 1000)
         self.player.setPosition(position)
         if self._split_audio:
             self.audio_player.setPosition(position)
@@ -377,9 +491,71 @@ class PlayerPane(QtWidgets.QWidget):
             self.audio_player.setPosition(max(0, position))
 
     def _on_error(self, _error, text=""):
+        self._video_ready = False
+        self._set_ready(False)
+        self.message(text or "This video could not be previewed.")
         if text:
             self.errored.emit(text)
 
     def _on_audio_error(self, _error, text=""):
-        if self._split_audio and text:
+        if not self._split_audio:
+            return
+        # The video is still watchable, so this must not block the
+        # transport; it is a silent preview, which the window already has
+        # wording for.
+        self._audio_ready = True
+        self._recompute_ready()
+        if text:
             self.errored.emit(f"Preview audio could not play: {text}")
+
+    def _on_media_status(self, status):
+        """Turn Qt's media status into something the window can show.
+
+        Qt reports loading, buffering and stalling separately, and all
+        three look identical from the outside: a black rectangle.  Saying
+        which one it is turns a seemingly hung window into a wait with a
+        reason.
+        """
+        S = QMediaPlayer.MediaStatus
+        if status == S.LoadingMedia:
+            self._video_ready = False
+            self._set_ready(False)
+            self.busy("Loading video")
+        elif status == S.BufferingMedia:
+            self.busy("Buffering")
+        elif status == S.StalledMedia:
+            self.busy("Waiting for data")
+        elif status in (S.LoadedMedia, S.BufferedMedia):
+            self._video_ready = True
+            self._recompute_ready()
+        elif status == S.InvalidMedia:
+            self._video_ready = False
+            self._set_ready(False)
+            self.message("This video could not be previewed.")
+        elif status == S.NoMedia:
+            self._video_ready = False
+            self._set_ready(False)
+            self.idle()
+        elif status == S.EndOfMedia:
+            self.idle()
+
+    def _on_audio_status(self, status):
+        """The second stream, when the source is adaptive."""
+        if not self._split_audio:
+            return
+        S = QMediaPlayer.MediaStatus
+        if status in (S.LoadedMedia, S.BufferedMedia):
+            self._audio_ready = True
+            self._recompute_ready()
+        elif status == S.InvalidMedia:
+            # Let the video play without it rather than blocking on it.
+            self._audio_ready = True
+            self._recompute_ready()
+        elif status == S.LoadingMedia:
+            self._audio_ready = False
+
+    def _on_buffer(self, fraction):
+        # Only while actually buffering: during normal playback Qt keeps
+        # emitting this and the caption would flicker for no reason.
+        if self._busy_text.startswith(("Buffering", "Waiting")) and fraction < 1.0:
+            self.overlay.setText(f"Buffering… {fraction:.0%}")

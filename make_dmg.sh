@@ -28,8 +28,19 @@ Drag TubeClipper into Applications.
 
 ffmpeg and ffprobe are included. No Homebrew installation is needed.
 
-If macOS blocks the app because it is not notarized, Control-click the app,
-choose Open, then choose Open once more. This is only needed on first launch.
+macOS will say it "could not verify" the app. That is because it is not
+notarized by Apple, not because anything was found in it.
+
+On macOS 15 and later, Control-clicking and choosing Open no longer works
+for this. Instead:
+
+  1. Click Done on the warning.
+  2. Open System Settings, go to Privacy & Security, and scroll down to
+     the Security section.
+  3. Next to "TubeClipper.app was blocked", click Open Anyway, then
+     authenticate and confirm.
+
+Only needed once. After that it opens like any other app.
 NOTE
 
 hdiutil create -volname "TubeClipper $VERSION" -srcfolder "$STAGE" \

@@ -169,8 +169,14 @@ git tag v1.2.0
 git push origin v1.2.0
 ```
 
-The included build is ad-hoc signed, not Apple-notarized, so another Mac may
-need the Control-click → Open flow on first launch.
+The included build is ad-hoc signed, not Apple-notarized, so another Mac will
+report that it "could not verify" the app on first launch. On macOS 15 and
+later the old Control-click → Open shortcut no longer clears this: the user
+has to open System Settings → Privacy & Security, scroll to Security, and
+click Open Anyway. `xattr -dr com.apple.quarantine /Applications/TubeClipper.app`
+does the same thing from a terminal. Removing the warning for everyone rather
+than making it clickable past needs a paid Apple Developer account and a
+notarization step in `make_dmg.sh`.
 
 ## Command line
 
