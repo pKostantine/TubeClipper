@@ -34,8 +34,8 @@ a = Analysis(
         ("assets/logo.png", "assets"),
         ("assets/logo_256.png", "assets"),
         ("assets/check.png", "assets"),
-    ] + collect_data_files("yt_dlp"),
-    hiddenimports=collect_submodules("yt_dlp") + [
+    ] + collect_data_files("yt_dlp") + collect_data_files("certifi"),
+    hiddenimports=collect_submodules("yt_dlp") + ["certifi",
         "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets",
         "PySide6.QtNetwork", "PySide6.QtMultimedia",
         "PySide6.QtMultimediaWidgets",

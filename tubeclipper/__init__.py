@@ -5,9 +5,34 @@ from __future__ import annotations
 import os
 import sys
 
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 __all__ = ["ffmpegtool", "source", "formats", "engine", "jobs",
            "timeline", "player", "ui"]
+
+
+def _use_bundled_certificates():
+    """Point Python's SSL at certifi's CA bundle.
+
+    A frozen macOS build carries its own OpenSSL, which looks for
+    certificates in a build-machine path that does not exist on the
+    user's Mac, so every HTTPS request fails with
+    CERTIFICATE_VERIFY_FAILED.  certifi ships a bundle inside the app;
+    use it unless the user has pointed SSL somewhere on purpose.
+    """
+    try:
+        import certifi
+    except ImportError:
+        return
+    bundle = certifi.where()
+    if not os.path.isfile(bundle):
+        return
+    for name in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
+        current = os.environ.get(name)
+        if not current or not os.path.isfile(current):
+            os.environ[name] = bundle
+
+
+_use_bundled_certificates()
 
 
 def resource_path(*parts):

@@ -34,6 +34,17 @@ def selftest():
 
     from tubeclipper import engine, ffmpegtool, formats
 
+    try:
+        import ssl
+        context = ssl.create_default_context()
+        count = context.cert_store_stats().get("x509_ca", 0)
+        if count < 50:
+            raise RuntimeError(f"only {count} CA certificates loaded")
+        print(f"  {'HTTPS certificates':<26} {count} CAs")
+    except Exception as exc:
+        ok = False
+        print(f"  {'HTTPS certificates':<26} FAILED  {exc}")
+
     if not ffmpegtool.have_ffmpeg():
         ok = False
         print(f"  {'ffmpeg + ffprobe':<26} MISSING")
