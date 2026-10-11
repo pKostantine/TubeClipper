@@ -39,7 +39,16 @@ jobs:
         shell: bash
         run: |
           chmod +x build.sh make_dmg.sh
-          ./make_dmg.sh
+          set +e
+          ./make_dmg.sh 2>&1 | tee build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            # Surface the failure as an annotation, which is readable without
+            # signing in; the raw log is not.
+            echo "::error title=macOS build failed::$(tail -60 build.log | sed -e ':a' -e 'N' -e '$!ba' -e 's/%/%25/g;s/\n/%0A/g')"
+            exit "$rc"
+          fi
           test -f "dist/TubeClipper-$(python tools/version.py)-macOS-${{ matrix.arch }}.dmg"
 
       - name: Upload workflow artifact
@@ -81,9 +90,17 @@ jobs:
       - name: Tests
         shell: pwsh
         run: |
-          python -m tests.test_engine
           $env:QT_QPA_PLATFORM = "offscreen"
-          python -m tests.test_app
+          foreach ($suite in "tests.test_engine", "tests.test_app") {
+            python -m $suite *> "$suite.log"
+            $rc = $LASTEXITCODE
+            Get-Content "$suite.log"
+            if ($rc -ne 0) {
+              $tail = (Get-Content "$suite.log" -Tail 60) -join "%0A"
+              Write-Output "::error title=$suite failed::$tail"
+              exit $rc
+            }
+          }
 
       - name: Freeze and self-test
         shell: pwsh
