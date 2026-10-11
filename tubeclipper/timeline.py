@@ -113,6 +113,32 @@ class TimelineView(QtWidgets.QWidget):
     def playhead(self):
         return self._playhead
 
+    def set_known_duration(self, seconds):
+        """Correct the length once the real one is known, keeping the marks.
+
+        YouTube's listed length for a stream it is still processing can be
+        off by most of a minute.  The selection follows the end if it was
+        on the end; anything past the new end is pulled back to it.
+        """
+        seconds = float(seconds or 0.0)
+        if seconds <= 0 or abs(seconds - self._duration) < 0.001:
+            return
+        old = self._duration
+        on_end = abs(self._out - old) < 0.001
+        self._duration = seconds
+        if on_end or self._out > seconds:
+            self._out = seconds
+        self._in = min(self._in, max(0.0, self._out - 0.001))
+        start, end = self._view
+        if abs(end - old) < 0.001 or end > seconds:
+            end = seconds
+        start = min(start, max(0.0, end - 0.02))
+        self._view = (start, end)
+        self._playhead = min(self._playhead, seconds)
+        self.update()
+        self.rangeChanged.emit(self._in, self._out)
+        self.viewChanged.emit(*self._view)
+
     def set_thumbs(self, thumbs):
         self._thumbs = list(thumbs or [])
         self._strip_busy = False

@@ -484,6 +484,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.player.markIn.connect(self.set_in)
         self.player.markOut.connect(self.set_out)
         self.player.errored.connect(self._player_error)
+        self.player.durationChanged.connect(self._player_duration)
         column.addWidget(self.player, 1)
 
         self.timeline = TimelineView()
@@ -968,9 +969,18 @@ class MainWindow(QtWidgets.QMainWindow):
             stream = preview.video
             audio = preview.audio
             self._preview_stream = stream
-            self.player.load(
-                stream.url, src.fps or stream.fps,
-                audio_url=audio.url if audio is not None else "")
+            if stream.segmented is not None:
+                # YouTube has not made a single file of this stream yet;
+                # preview it a stretch at a time (preview.py).
+                from .preview import WindowedPreview
+                self.player.load_windowed(
+                    WindowedPreview(stream.segmented,
+                                    audio.segmented if audio is not None else None),
+                    src.fps or stream.fps)
+            else:
+                self.player.load(
+                    stream.url, src.fps or stream.fps,
+                    audio_url=audio.url if audio is not None else "")
             if src.still_processing:
                 pass                    # keep the processing notice up
             elif preview.note:
@@ -1020,6 +1030,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self.thumb.setPixmap(image.scaled(
                 self.thumb.size(), QtCore.Qt.KeepAspectRatio,
                 QtCore.Qt.SmoothTransformation))
+
+    def _player_duration(self, seconds):
+        """The real length of a stream YouTube is still processing."""
+        if self.source is None or not self.player.windowed() or seconds <= 0:
+            return
+        self.source.duration = seconds
+        self.timeline.set_known_duration(seconds)
+        self._sync_range_fields()
+        self._update_summary()
 
     def _player_error(self, text):
         self.status.showMessage(f"Preview: {text}", 8000)
@@ -1094,7 +1113,8 @@ class MainWindow(QtWidgets.QMainWindow):
         def make(report):
             return engine.grab_frames(
                 stream.url, times, out_dir, stream.headers,
-                cancel=lambda: task.cancelled(), report=report)
+                cancel=lambda: task.cancelled(), report=report,
+                segmented=stream.segmented)
 
         task = jobs.Task(make)
         task.signals.progress.connect(

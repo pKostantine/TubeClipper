@@ -171,7 +171,21 @@ def _info_for(spec):
     return spec.info
 
 
-def build_command(spec):
+def _input_for(stream, clip, fetch):
+    """Input flags for one remote stream.
+
+    A stream YouTube serves only in pieces cannot be opened by address; the
+    pieces covering the clip are fetched first (``fetch``) and the seek is
+    made relative to where that local copy begins.  Without ``fetch`` (a
+    dry run) the address is shown as it is.
+    """
+    if getattr(stream, "segmented", None) is not None and fetch is not None:
+        path, offset = fetch(stream, clip.start, clip.end)
+        return ffmpegtool.input_args(path, seek=max(0.0, clip.start - offset))
+    return ffmpegtool.input_args(stream.url, stream.headers, clip.start)
+
+
+def build_command(spec, fetch=None):
     """The ffmpeg argument list for one export, plus what it will produce.
 
     Split out from :func:`export` so it can be inspected -- the test suite
@@ -207,18 +221,18 @@ def build_command(spec):
         if audio_only:
             stream = selection.audio
             vcodec, acodec = "", stream.acodec
-            args += ffmpegtool.input_args(stream.url, stream.headers, clip.start)
+            args += _input_for(stream, clip, fetch)
             maps = ["-map", "0:a:0"]
         elif selection.audio is not None and preset.kind != "gif":
             v, a = selection.video, selection.audio
             vcodec, acodec = v.vcodec, a.acodec
-            args += ffmpegtool.input_args(v.url, v.headers, clip.start)
-            args += ffmpegtool.input_args(a.url, a.headers, clip.start)
+            args += _input_for(v, clip, fetch)
+            args += _input_for(a, clip, fetch)
             maps = ["-map", "0:v:0", "-map", "1:a:0"]
         else:
             v = selection.video
             vcodec, acodec = v.vcodec, v.acodec
-            args += ffmpegtool.input_args(v.url, v.headers, clip.start)
+            args += _input_for(v, clip, fetch)
             maps = ["-map", "0:v:0"] if preset.kind == "gif" else \
                    ["-map", "0:v:0", "-map", "0:a:0?"]
 
@@ -273,17 +287,55 @@ def export(spec, on_progress=None, on_status=None, cancel=None):
 
     if on_status:
         on_status("Resolving streams…")
-    args, note, vcodec, acodec = build_command(spec)
 
-    if on_status:
-        on_status("Encoding…" if not spec.fast else "Copying…")
+    # Streams YouTube is still processing are fetched piece by piece into
+    # a scratch folder first; that is the first part of the progress bar.
+    scratch = []
+    fetched = {"share": 0.0}
+
+    def fetch(stream, start, end):
+        if not scratch:
+            scratch.append(tempfile.mkdtemp(prefix="tubeclipper-parts-"))
+        fetched["share"] = 0.5
+        kind = "video" if stream.has_video else "audio"
+        path = os.path.join(scratch[0], f"{kind}-{stream.format_id}.mp4")
+        if on_status:
+            on_status(f"Fetching the {kind} (YouTube is still processing "
+                      f"this stream)…")
+
+        # Video is most of the bytes: 0-40%, then audio 40-50%.  Audio on its
+        # own gets the whole first half.
+        if kind == "video":
+            base, span = 0.0, 0.4
+            fetched["video"] = True
+        elif fetched.get("video"):
+            base, span = 0.4, 0.1
+        else:
+            base, span = 0.0, 0.5
+
+        def report(fraction, text):
+            if on_progress:
+                on_progress(base + span * fraction, f"Fetching {kind}: {text}")
+        return stream.segmented.fetch_span(start, end, path,
+                                           report=report, cancel=cancel)
 
     try:
+        args, note, vcodec, acodec = build_command(spec, fetch=fetch)
+
+        if on_status:
+            on_status("Encoding…" if not spec.fast else "Copying…")
+
+        share = fetched["share"]
+
+        def progress(fraction, text):
+            if on_progress:
+                on_progress(share + (1.0 - share) * (fraction or 0.0), text)
+
         if preset.kind == "gif":
             _gif(args, out_path, spec, on_progress, cancel)
         else:
             ffmpegtool.run(args + ["-y", out_path], duration=clip.duration,
-                           on_progress=(lambda f, t: on_progress(f, t)) if on_progress else None,
+                           on_progress=progress if on_progress else None,
                            cancel=cancel)
     except Exception:
         try:
@@ -292,6 +344,9 @@ def export(spec, on_progress=None, on_status=None, cancel=None):
         except OSError:
             pass
         raise
+    finally:
+        for folder in scratch:
+            shutil.rmtree(folder, ignore_errors=True)
 
     return Result(path=out_path, note=note, duration=clip.duration,
                   argv=list(args))
@@ -453,7 +508,7 @@ def clear_cache():
 # --------------------------------------------------------------------------
 
 def grab_frames(url, times, out_dir, headers=None, width=160, cancel=None,
-                report=None):
+                report=None, segmented=None):
     """One JPEG per timestamp, for the filmstrip under the player.
 
     Each frame is its own ffmpeg run with ``-ss`` before ``-i``: a single
@@ -473,7 +528,18 @@ def grab_frames(url, times, out_dir, headers=None, width=160, cancel=None,
         if os.path.exists(path):
             made.append((t, path))
             continue
-        args = ffmpegtool.input_args(url, headers, seek=max(0.0, t))
+        if segmented is not None:
+            # One five-second piece holds the frame; fetch just that one.
+            try:
+                piece = os.path.join(out_dir, f"piece_{index:04d}.mp4")
+                part = segmented.index_for(t)
+                segmented.fetch(part, part, piece)
+                seek = max(0.0, t - segmented.start(part))
+                args = ffmpegtool.input_args(piece, seek=seek)
+            except Exception:
+                continue
+        else:
+            args = ffmpegtool.input_args(url, headers, seek=max(0.0, t))
         args += ["-frames:v", "1", "-vf", f"scale={width}:-2",
                  "-q:v", "5", "-y", path]
         try:

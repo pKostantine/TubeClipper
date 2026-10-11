@@ -148,6 +148,17 @@ class PlayerPane(QtWidgets.QWidget):
         self._loading = False
         self._load_ceiling = None
         self._has_media = False
+        # Windowed mode, for streams YouTube is still processing: the player
+        # holds a local stretch of the stream and maps positions with its
+        # offset.  See preview.py.
+        self._windowed = None
+        self._window = None            # (offset, end) of the loaded stretch
+        self._window_target = 0.0
+        self._window_task = None
+        self._next_window = None       # (path, offset, end) fetched ahead
+        self._prefetch_task = None
+        self._resume = False
+        self._total = 0.0
         self._transport_icons = {
             name: _transport_icon(name)
             for name in ("back", "previous", "step_back", "play", "pause",
@@ -354,6 +365,7 @@ class PlayerPane(QtWidgets.QWidget):
         if not HAVE_MEDIA:
             return
         self._fps = fps or 25.0
+        self._leave_windowed()
         self.player.stop()
         self.audio_player.stop()
         self._split_audio = bool(audio_url)
@@ -368,9 +380,177 @@ class PlayerPane(QtWidgets.QWidget):
         self.audio_player.setSource(
             QtCore.QUrl(audio_url) if audio_url else QtCore.QUrl())
 
+    # -- windowed mode -------------------------------------------------
+
+    def windowed(self):
+        return self._windowed is not None
+
+    def load_windowed(self, provider, fps=0.0):
+        """Preview a stream that only exists as pieces (preview.py)."""
+        if not HAVE_MEDIA:
+            return
+        self._fps = fps or 25.0
+        self._leave_windowed()
+        self.player.stop()
+        self.audio_player.stop()
+        self.audio_player.setSource(QtCore.QUrl())
+        self._split_audio = False
+        self._windowed = provider
+        self._has_media = True
+        self._audio_ready = True
+        self._request_window(0.0, resume=False, first=True)
+
+    def _leave_windowed(self):
+        for task in (self._window_task, self._prefetch_task):
+            if task is not None:
+                task.cancel()
+        if self._windowed is not None:
+            provider = self._windowed
+            QtCore.QTimer.singleShot(5000, provider.close)
+        self._windowed = None
+        self._window = None
+        self._window_task = None
+        self._prefetch_task = None
+        self._next_window = None
+        self._resume = False
+        self._total = 0.0
+
+    def _start_task(self, fn):
+        from .jobs import Task
+        task = Task(fn)
+        QtCore.QThreadPool.globalInstance().start(task)
+        return task
+
+    def _request_window(self, seconds, resume=False, first=False):
+        from .source import format_timecode
+        if self._window_task is not None:
+            self._window_task.cancel()
+        if self.playing():
+            resume = True
+        # Unload the old stretch now: otherwise its late status and position
+        # reports arrive while the new one is being fetched and are taken
+        # for the new one's.
+        self.player.stop()
+        self.player.setSource(QtCore.QUrl())
+        self._window = None
+        self._resume = resume
+        self._window_target = seconds
+        self._pending_seek = None
+        self._video_ready = False
+        self._set_ready(False)
+        self._loading = True
+        if first:
+            label, base = "Loading video", 0.35
+        else:
+            self.overlay.set_fraction(0.0)
+            label, base = f"Loading {format_timecode(seconds, millis=False)}", 0.0
+        self.progress(label, base, base + 0.1)
+        provider = self._windowed
+        holder = {}
+
+        def work(report):
+            total = provider.total()
+            path, offset, end = provider.build(
+                seconds, report=report, cancel=lambda: holder["task"].cancelled())
+            return total, path, offset, end
+
+        from .jobs import Task
+        task = Task(work)
+        holder["task"] = task
+        span = 0.80 - base if first else 0.9
+        task.signals.progress.connect(
+            lambda f, _t, t=task, b=base, w=span, l=label:
+            t is self._window_task and self.progress(l, b + w * f, b + w))
+        task.signals.done.connect(lambda r, t=task: self._window_ready(t, r))
+        task.signals.failed.connect(lambda m, t=task: self._window_failed(t, m))
+        self._window_task = task
+        QtCore.QThreadPool.globalInstance().start(task)
+
+    def _window_ready(self, task, result):
+        if task is not self._window_task or self._windowed is None:
+            return
+        self._window_task = None
+        total, path, offset, end = result
+        if total and abs(total - self._total) > 0.01:
+            self._total = total
+            self.durationChanged.emit(total)
+        self._open_window(path, offset, end, self._window_target)
+
+    def _window_failed(self, task, message):
+        if task is not self._window_task:
+            return
+        self._window_task = None
+        self._loading = False
+        self._set_ready(False)
+        self.message("Could not load this part of the video.\n" + message)
+        self.errored.emit(message)
+
+    def _open_window(self, path, offset, end, seek_to):
+        self.player.stop()
+        self._window = (offset, end)
+        self._next_window = None
+        self._pending_seek = max(offset, min(seek_to, end - 0.05))
+        self._video_ready = False
+        self._set_ready(False)
+        self.player.setSource(QtCore.QUrl.fromLocalFile(path))
+
+    def _prefetch(self):
+        """Fetch the stretch after this one while this one plays."""
+        if (self._windowed is None or self._window is None
+                or self._prefetch_task is not None or self._next_window):
+            return
+        end = self._window[1]
+        if self._total and end >= self._total - 0.5:
+            return
+        provider = self._windowed
+        holder = {}
+
+        def work():
+            return provider.build(end, cancel=lambda: holder["task"].cancelled())
+
+        from .jobs import Task
+        task = Task(work)
+        holder["task"] = task
+
+        def done(result, t=task):
+            if t is self._prefetch_task:
+                self._prefetch_task = None
+                self._next_window = result
+
+        def failed(_message, t=task):
+            if t is self._prefetch_task:
+                self._prefetch_task = None
+
+        task.signals.done.connect(done)
+        task.signals.failed.connect(failed)
+        self._prefetch_task = task
+        QtCore.QThreadPool.globalInstance().start(task)
+
+    def _advance_if_ended(self):
+        if (self._windowed is not None and self._ready
+                and self.player.mediaStatus() == QMediaPlayer.MediaStatus.EndOfMedia):
+            self._advance_window()
+
+    def _advance_window(self):
+        """The stretch ran out while playing: carry on with the next one."""
+        if self._window is None:
+            return
+        end = self._window[1]
+        if self._total and end >= self._total - 0.5:
+            return                                # the real end
+        self._resume = True
+        if self._next_window is not None:
+            path, offset, stop = self._next_window
+            self._loading = True
+            self.progress("Loading video", 0.9, 0.98)
+            self._open_window(path, offset, stop, end)
+        else:
+            self._request_window(end, resume=True)
+
     def clear(self):
         if not HAVE_MEDIA:
             return
+        self._leave_windowed()
         self.player.stop()
         self.audio_player.stop()
         self.player.setSource(QtCore.QUrl())
@@ -508,11 +688,24 @@ class PlayerPane(QtWidgets.QWidget):
         """Ready only when every stream the preview needs has loaded."""
         if self._video_ready and self._audio_ready:
             self._loading = False
-            self._set_ready(True)
+            # Ready for seeking before anyone is told, so a seek made in
+            # response to readyChanged is not overwritten by the queued one.
+            announce = not self._ready
+            self._ready = True
+            self.set_enabled(True)
             self.idle()
             if self._pending_seek is not None:
                 seconds, self._pending_seek = self._pending_seek, None
                 self.seek(seconds)
+            if self._resume:
+                self._resume = False
+                if self._windowed is not None:
+                    # After Qt has finished settling the new stretch.
+                    QtCore.QTimer.singleShot(0, self.play)
+                else:
+                    self.play()
+            if announce:
+                self.readyChanged.emit(True)
         elif self._video_ready and not self._audio_ready:
             self._loading = True
             self.progress("Loading audio", 0.85, 0.98)
@@ -525,6 +718,10 @@ class PlayerPane(QtWidgets.QWidget):
     def position(self):
         if not HAVE_MEDIA or self.player is None:
             return 0.0
+        if self._windowed is not None:
+            if self._window is None or not self._ready:
+                return self._window_target
+            return self._window[0] + self.player.position() / 1000.0
         return self.player.position() / 1000.0
 
     def playing(self):
@@ -558,6 +755,8 @@ class PlayerPane(QtWidgets.QWidget):
     def duration(self):
         if not HAVE_MEDIA or self.player is None:
             return 0.0
+        if self._windowed is not None:
+            return self._total
         return max(0.0, self.player.duration() / 1000.0)
 
     def go_to_start(self):
@@ -582,6 +781,32 @@ class PlayerPane(QtWidgets.QWidget):
         if not HAVE_MEDIA or self.player is None:
             return
         seconds = max(0.0, seconds)
+        if self._windowed is not None:
+            if self._total:
+                seconds = min(seconds, self._total)
+            window = self._window
+            # The last stretch runs to the very end, so anything past its
+            # start is inside it; elsewhere leave a margin before the end.
+            last = window is not None and self._total and \
+                window[1] >= self._total - 0.01
+            inside = (window is not None and window[0] <= seconds
+                      and (last or seconds < window[1] - 0.25))
+            if not inside:
+                self._request_window(seconds, resume=self._resume)
+                return
+            if not self._ready:
+                self._pending_seek = seconds
+                return
+            local = seconds - window[0]
+            available = self.player.duration() / 1000.0
+            if available > 0:
+                # The stretch's file can be a little shorter than its
+                # nominal end; land on its last frame rather than nowhere.
+                local = min(local, max(0.0, available - self._frame()))
+            self._seeking = True
+            self.player.setPosition(int(local * 1000))
+            self._seeking = False
+            return
         if not self._ready:
             self._pending_seek = seconds
             return
@@ -601,11 +826,19 @@ class PlayerPane(QtWidgets.QWidget):
         if self._split_audio and self.playing():
             self._sync_audio(ms)
         seconds = ms / 1000.0
+        if self._windowed is not None:
+            if self._window is None or not self._ready:
+                return
+            seconds += self._window[0]
+            if self.playing() and seconds > self._window[1] - 30:
+                self._prefetch()
         from .source import format_timecode
         self.readout.setText(format_timecode(seconds))
         self.positionChanged.emit(seconds)
 
     def _on_duration(self, ms):
+        if self._windowed is not None:
+            return                    # the stretch's length is not the video's
         self.durationChanged.emit(ms / 1000.0)
 
     def _on_state(self, state):
@@ -671,6 +904,8 @@ class PlayerPane(QtWidgets.QWidget):
         reason.
         """
         S = QMediaPlayer.MediaStatus
+        if self._windowed is not None and self._window is None:
+            return              # between stretches; nothing loaded to report on
         if status == S.LoadingMedia:
             self._video_ready = False
             self._loading = True
@@ -705,6 +940,11 @@ class PlayerPane(QtWidgets.QWidget):
             self.idle()
         elif status == S.EndOfMedia:
             self._set_buffering("")
+            if self._windowed is not None:
+                # Deferred and re-checked: Qt delivers this asynchronously,
+                # and a late one from the stretch just replaced must not
+                # stop the new one.
+                QtCore.QTimer.singleShot(50, self._advance_if_ended)
 
     def _on_audio_status(self, status):
         """The second stream, when the source is adaptive."""

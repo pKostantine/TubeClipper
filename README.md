@@ -165,8 +165,8 @@ Actions page to download workflow artifacts. Pushing a version tag builds all
 three, creates the matching GitHub Release if needed, and attaches them:
 
 ```sh
-git tag v1.2.3
-git push origin v1.2.3
+git tag v1.2.4
+git push origin v1.2.4
 ```
 
 The included build is ad-hoc signed, not Apple-notarized, so another Mac will

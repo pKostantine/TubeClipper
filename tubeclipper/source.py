@@ -49,6 +49,9 @@ class Stream:
     fps: float = 0.0
     abr: float = 0.0
     ext: str = ""
+    # Set for a stream YouTube serves only as numbered pieces (a broadcast
+    # it is still processing); see segments.py.
+    segmented: object = field(default=None, repr=False, compare=False)
 
     @property
     def has_video(self):
@@ -279,7 +282,9 @@ def _score_audio(f, prefer_aac):
 
 
 def _stream(f):
+    from . import segments
     return Stream(
+        segmented=segments.for_format(f),
         url=f.get("url", ""),
         headers=dict(f.get("http_headers") or {}),
         format_id=str(f.get("format_id") or ""),
